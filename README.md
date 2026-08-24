@@ -15,11 +15,11 @@ Java 25 / Spring Boot 4.1.0 API for the `blink_demo` wizard. It persists the fir
 
 ## Run locally
 
-JDK 25 and Maven 3.9+ are required. From this folder:
+JDK 25 and Maven 3.9+ are required. Copy `.env.example` to `.env` in this folder and put your Render **External** Database URL in `DATABASE_URL`. `.env` is gitignored.
 
 ```powershell
-$env:DATABASE_URL = "postgres://USER:PASSWORD@HOST:5432/DATABASE"
-$env:BLINK_AUTOMATION_SDLC_PATH = "..\automation_sdlc"
+Copy-Item .env.example .env
+# edit .env and set DATABASE_URL=postgres://...
 mvn spring-boot:run
 ```
 
@@ -41,11 +41,15 @@ You already have Postgres on Render. Deploy the API from the **blink-backend** r
 
 ### 1. Backend — Web Service (Docker)
 
-1. **New → Web Service** → the Git repo that contains this `Dockerfile`.
-2. Runtime: **Docker**. If the repo root is `blink-backend`, leave Root Directory empty. If this folder is inside a larger repo, set Root Directory to `blink-backend`.
-3. Instance: at least **1 GB RAM** (zip generation is heavy for 512 MB).
-4. Health check: `/actuator/health`
-5. Environment:
+The GitHub repo `blink-backend` already *is* the API. The `Dockerfile` sits at the **repo root** (`Dockerfile`, not `blink-backend/Dockerfile`).
+
+1. **New → Web Service** → `nisha-ts-40599/blink-backend`.
+2. Runtime: **Docker**.
+3. **Root Directory: leave blank.** Do not set `blink-backend` — that folder does not exist in this repo, and Render will fail with "Root directory 'blink-backend' does not exist".
+4. Dockerfile path: `Dockerfile` (default).
+5. Instance: at least **1 GB RAM** (zip generation is heavy for 512 MB).
+6. Health check: `/actuator/health`
+7. Environment:
 
 | Key | Value |
 | --- | --- |
@@ -59,17 +63,22 @@ Confirm: `https://YOUR-BACKEND.onrender.com/api/stakeholder-roles` returns the Y
 
 ### 2. Frontend — Static Site
 
-1. **New → Static Site** → same repo.
-2. Root Directory: `blink_demo`
-3. Build: `npm install && npm run build`
-4. Publish: `dist`
-5. Environment (**build-time**):
+`blink_demo` is **not** inside the `blink-backend` GitHub repo. Do not set Root Directory to `blink_demo` on the backend service.
+
+1. Push `blink_demo` to its own GitHub repo (or a monorepo that actually contains that folder).
+2. **New → Static Site** → that frontend repo.
+3. Root Directory: **leave blank** if the repo root is `blink_demo`.
+4. Build: `npm install && npm run build`
+5. Publish: `dist`
+6. Environment (**build-time**, then rebuild):
 
 | Key | Value |
 | --- | --- |
-| `VITE_API_URL` | `https://YOUR-BACKEND.onrender.com/api` |
+| `VITE_API_URL` | `https://blink-backend-af7x.onrender.com/api` |
 
-Rebuild the static site after this value is set. Then put that site origin into `BLINK_CORS_ORIGINS` on the backend and redeploy the API.
+On the **backend** service set:
+
+`BLINK_CORS_ORIGINS=http://localhost:5173,https://YOUR-FRONTEND.onrender.com`
 
 ### Local vs Render
 

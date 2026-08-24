@@ -21,6 +21,7 @@ public class CorsConfig {
                         .toArray(String[]::new);
                 registry.addMapping("/api/**")
                         .allowedOrigins(origins)
+                        .allowedOriginPatterns("https://*.onrender.com")
                         .allowedMethods("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
                         .allowedHeaders("*")
                         .exposedHeaders("Content-Disposition", "X-Blink-Stakeholder-Source");
