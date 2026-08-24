@@ -37,12 +37,12 @@ Open `http://localhost:5173`.
 
 ## Deploy on Render
 
-You already have Postgres on Render. Add **two more services** from the same Git repo (repo root must contain `Dockerfile`, `blink-backend/`, `blink_demo/`, and `automation_sdlc/`).
+You already have Postgres on Render. Deploy the API from the **blink-backend** repo (this folder contains the `Dockerfile`). Deploy the UI as a separate static site from `blink_demo`.
 
 ### 1. Backend — Web Service (Docker)
 
-1. **New → Web Service** → this Git repo.
-2. Runtime: **Docker**. Dockerfile path: `Dockerfile`. Do **not** set a Root Directory.
+1. **New → Web Service** → the Git repo that contains this `Dockerfile`.
+2. Runtime: **Docker**. If the repo root is `blink-backend`, leave Root Directory empty. If this folder is inside a larger repo, set Root Directory to `blink-backend`.
 3. Instance: at least **1 GB RAM** (zip generation is heavy for 512 MB).
 4. Health check: `/actuator/health`
 5. Environment:
