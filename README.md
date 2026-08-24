@@ -53,7 +53,7 @@ The GitHub repo `blink-backend` already *is* the API. The `Dockerfile` sits at t
 
 | Key | Value |
 | --- | --- |
-| `DATABASE_URL` | Postgres **Internal** Database URL (Link the existing Blink database) |
+| `DATABASE_URL` | **Required.** Link the existing Postgres service, or paste the **Internal** Database URL. Without this the API tries `localhost` and Hibernate fails. |
 | `BLINK_CORS_ORIGINS` | `https://YOUR-FRONTEND.onrender.com` (add after the static site exists; you can also keep `http://localhost:5173`) |
 | `JAVA_OPTS` | `-XX:MaxRAMPercentage=75.0` |
 

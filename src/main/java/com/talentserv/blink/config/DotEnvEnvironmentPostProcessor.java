@@ -22,6 +22,9 @@ public class DotEnvEnvironmentPostProcessor implements EnvironmentPostProcessor 
 
     @Override
     public void postProcessEnvironment(ConfigurableEnvironment environment, SpringApplication application) {
+        if (BlinkRuntime.testsRunning()) {
+            return;
+        }
         Path file = resolveEnvFile();
         if (file == null) {
             return;
