@@ -1,0 +1,43 @@
+server:
+  port: ${PORT:8090}
+
+spring:
+  application:
+    name: blink-backend
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/blink}
+    username: ${SPRING_DATASOURCE_USERNAME:blink}
+    password: ${SPRING_DATASOURCE_PASSWORD:blink}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: ${SPRING_JPA_DDL_AUTO:none}
+    defer-datasource-initialization: true
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+  sql:
+    init:
+      mode: always
+      continue-on-error: true
+  servlet:
+    multipart:
+      max-file-size: 25MB
+      max-request-size: 30MB
+  jackson:
+    default-property-inclusion: non_null
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: never
+
+blink:
+  automation-sdlc-path: ${BLINK_AUTOMATION_SDLC_PATH:../automation_sdlc}
+  demo-user-email: blink.system@talentserv.com
+  cors-origins: ${BLINK_CORS_ORIGINS:http://localhost:5173,http://127.0.0.1:5173}
