@@ -1,6 +1,8 @@
 package com.talentserv.blink.config;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -15,16 +17,18 @@ public class CorsConfig {
         return new WebMvcConfigurer() {
             @Override
             public void addCorsMappings(CorsRegistry registry) {
-                String[] origins = Arrays.stream(properties.getCorsOrigins().split(","))
+                List<String> patterns = new ArrayList<>();
+                patterns.add("*");
+                Arrays.stream(properties.getCorsOrigins().split(","))
                         .map(String::trim)
                         .filter(origin -> !origin.isBlank())
-                        .toArray(String[]::new);
+                        .forEach(patterns::add);
                 registry.addMapping("/api/**")
-                        .allowedOrigins(origins)
-                        .allowedOriginPatterns("https://*.onrender.com")
+                        .allowedOriginPatterns(patterns.toArray(String[]::new))
                         .allowedMethods("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
                         .allowedHeaders("*")
-                        .exposedHeaders("Content-Disposition", "X-Blink-Stakeholder-Source");
+                        .exposedHeaders("Content-Disposition", "X-Blink-Stakeholder-Source")
+                        .maxAge(3600);
             }
         };
     }

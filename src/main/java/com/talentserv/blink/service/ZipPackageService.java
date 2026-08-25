@@ -1,6 +1,7 @@
 package com.talentserv.blink.service;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.FileVisitResult;
@@ -8,18 +9,23 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
-import java.util.Map;
+import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 import java.util.zip.ZipOutputStream;
 
 import org.springframework.stereotype.Service;
 
 import com.talentserv.blink.config.BlinkProperties;
-import com.talentserv.blink.domain.Project;
 
 @Service
 public class ZipPackageService {
+
+    public static final String WORKSPACE_ROOT = "MY_PILOT_DEMO";
+
+    static final String BUNDLED_AUTOMATION_SDLC = "/templates/automation_sdlc.zip";
 
     private static final Set<String> SKIP_DIR_NAMES = Set.of(
             ".git",
@@ -30,43 +36,66 @@ public class ZipPackageService {
             "__pycache__",
             ".venv",
             ".pytest_cache",
-            ".mypy_cache"
+            ".mypy_cache",
+            "runtime-data"
     );
 
     private final BlinkProperties properties;
-    private final SpringBootProjectGenerator springBootProjectGenerator;
 
-    public ZipPackageService(BlinkProperties properties, SpringBootProjectGenerator springBootProjectGenerator) {
+    public ZipPackageService(BlinkProperties properties) {
         this.properties = properties;
-        this.springBootProjectGenerator = springBootProjectGenerator;
     }
 
-    public void writeWorkspace(Project project, String requirementMarkdown, OutputStream output) throws IOException {
+    public void writeWorkspace(String requirementMarkdown, OutputStream output) throws IOException {
         try (ZipOutputStream zip = new ZipOutputStream(output)) {
-            addAutomationSdlc(zip);
-            addGeneratedProject(zip, project);
-            putText(zip, "requirement.md", requirementMarkdown);
+            zip.putNextEntry(new ZipEntry(WORKSPACE_ROOT + "/"));
+            zip.closeEntry();
+
+            Path sdlc = resolveAutomationSdlc();
+            Path cursor = sdlc != null ? sdlc.resolve(".cursor") : null;
+            if (cursor != null && Files.isDirectory(cursor)) {
+                copyOrPlaceholder(zip, cursor, WORKSPACE_ROOT + "/.cursor", missing(".cursor"));
+            } else {
+                int fromBundle = copyBundledPrefix(zip, ".cursor/", WORKSPACE_ROOT + "/.cursor");
+                if (fromBundle == 0) {
+                    putText(zip, WORKSPACE_ROOT + "/.cursor/README.md", missing(".cursor"));
+                }
+            }
+
+            if (sdlc != null) {
+                copyOrPlaceholder(zip, sdlc, WORKSPACE_ROOT + "/automation_sdlc", missing("automation_sdlc"));
+            } else {
+                int fromBundle = copyBundledPrefix(zip, "", WORKSPACE_ROOT + "/automation_sdlc");
+                if (fromBundle == 0) {
+                    putText(zip, WORKSPACE_ROOT + "/automation_sdlc/README.md", missing("automation_sdlc"));
+                }
+            }
+
+            copyOrPlaceholder(zip, resolveDir("blink_demo", "blink_ui"), WORKSPACE_ROOT + "/blink_ui", missing("blink_ui"));
+            copyOrPlaceholder(zip, resolveBackend(), WORKSPACE_ROOT + "/blink_backend", missing("blink_backend"));
+            if (requirementMarkdown != null && !requirementMarkdown.isBlank()) {
+                putText(zip, WORKSPACE_ROOT + "/requirement.md", requirementMarkdown);
+            }
         }
     }
 
-    private void addGeneratedProject(ZipOutputStream zip, Project project) throws IOException {
-        Map<String, String> files = springBootProjectGenerator.generate(project);
-        for (Map.Entry<String, String> entry : files.entrySet()) {
-            putText(zip, entry.getKey(), entry.getValue());
-        }
+    private static String missing(String folder) {
+        return "# " + folder + "\n\nBlink could not find this folder to copy into the download.\n";
     }
 
-    private void addAutomationSdlc(ZipOutputStream zip) throws IOException {
-        Path root = resolveAutomationSdlc();
-        if (root == null) {
-            putText(zip, "automation_sdlc/README.md", """
-                    # automation_sdlc
-
-                    Blink could not find the `automation_sdlc` folder next to this API.
-                    Set `BLINK_AUTOMATION_SDLC_PATH` to the framework directory and download again.
-                    """);
-            return;
+    private void copyOrPlaceholder(ZipOutputStream zip, Path source, String zipPrefix, String placeholder)
+            throws IOException {
+        if (source != null && Files.isDirectory(source)) {
+            int copied = copyTree(zip, source, zipPrefix);
+            if (copied > 0) {
+                return;
+            }
         }
+        putText(zip, zipPrefix + "/README.md", placeholder);
+    }
+
+    private int copyTree(ZipOutputStream zip, Path root, String zipPrefix) throws IOException {
+        AtomicInteger copied = new AtomicInteger();
         Files.walkFileTree(root, new SimpleFileVisitor<>() {
             @Override
             public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
@@ -81,17 +110,61 @@ public class ZipPackageService {
 
             @Override
             public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-                String name = file.getFileName().toString();
-                if (name.endsWith(".pyc") || name.equals(".DS_Store")) {
+                if (skipFile(file.getFileName().toString())) {
                     return FileVisitResult.CONTINUE;
                 }
                 String relative = root.relativize(file).toString().replace('\\', '/');
-                zip.putNextEntry(new ZipEntry("automation_sdlc/" + relative));
+                zip.putNextEntry(new ZipEntry(zipPrefix + "/" + relative));
                 Files.copy(file, zip);
                 zip.closeEntry();
+                copied.incrementAndGet();
                 return FileVisitResult.CONTINUE;
             }
         });
+        return copied.get();
+    }
+
+    int copyBundledPrefix(ZipOutputStream zip, String entryPrefix, String zipPrefix) throws IOException {
+        try (InputStream in = ZipPackageService.class.getResourceAsStream(BUNDLED_AUTOMATION_SDLC)) {
+            if (in == null) {
+                return 0;
+            }
+            int copied = 0;
+            try (ZipInputStream zin = new ZipInputStream(in)) {
+                for (ZipEntry entry = zin.getNextEntry(); entry != null; entry = zin.getNextEntry()) {
+                    if (entry.isDirectory()) {
+                        continue;
+                    }
+                    String name = entry.getName().replace('\\', '/');
+                    if (name.startsWith("./")) {
+                        name = name.substring(2);
+                    }
+                    if (!entryPrefix.isEmpty()) {
+                        if (!name.startsWith(entryPrefix)) {
+                            continue;
+                        }
+                        name = name.substring(entryPrefix.length());
+                    }
+                    if (name.isBlank() || skipBundledPath(name)) {
+                        continue;
+                    }
+                    zip.putNextEntry(new ZipEntry(zipPrefix + "/" + name));
+                    zin.transferTo(zip);
+                    zip.closeEntry();
+                    copied++;
+                }
+            }
+            return copied;
+        }
+    }
+
+    private static boolean skipBundledPath(String relative) {
+        for (String part : relative.split("/")) {
+            if (SKIP_DIR_NAMES.contains(part)) {
+                return true;
+            }
+        }
+        return skipFile(Path.of(relative).getFileName().toString());
     }
 
     Path resolveAutomationSdlc() {
@@ -100,21 +173,86 @@ public class ZipPackageService {
             configured = Path.of(System.getProperty("user.dir")).resolve(configured);
         }
         configured = configured.normalize();
-        if (Files.isDirectory(configured)) {
+        if (isUsableSdlc(configured)) {
             return configured;
         }
-        Path sibling = Path.of(System.getProperty("user.dir")).resolve("automation_sdlc").normalize();
-        if (Files.isDirectory(sibling)) {
-            return sibling;
+        Path walked = walkForDirectory("automation_sdlc");
+        if (isUsableSdlc(walked)) {
+            return walked;
         }
-        Path parentSibling = Path.of(System.getProperty("user.dir")).getParent();
-        if (parentSibling != null) {
-            Path fromParent = parentSibling.resolve("automation_sdlc").normalize();
-            if (Files.isDirectory(fromParent)) {
-                return fromParent;
+        return null;
+    }
+
+    Path resolveBackend() {
+        Path cwd = Path.of(System.getProperty("user.dir")).normalize();
+        if (Files.isRegularFile(cwd.resolve("pom.xml")) && Files.isDirectory(cwd.resolve("src"))) {
+            return cwd;
+        }
+        return firstExistingDirectory(List.of("blink-backend", "blink_backend"));
+    }
+
+    Path resolveDir(String... names) {
+        return firstExistingDirectory(List.of(names));
+    }
+
+    private static boolean isUsableSdlc(Path dir) {
+        if (dir == null || !Files.isDirectory(dir)) {
+            return false;
+        }
+        if (Files.isRegularFile(dir.resolve("Makefile"))
+                || Files.isRegularFile(dir.resolve("README.md"))
+                || Files.isDirectory(dir.resolve("ai-sdlc"))) {
+            return true;
+        }
+        try (var children = Files.list(dir)) {
+            return children.findAny().isPresent();
+        } catch (IOException ignored) {
+            return false;
+        }
+    }
+
+    private static Path walkForDirectory(String name) {
+        Path dir = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
+        while (dir != null) {
+            Path candidate = dir.resolve(name);
+            if (Files.isDirectory(candidate)) {
+                return candidate;
+            }
+            dir = dir.getParent();
+        }
+        return null;
+    }
+
+    private static Path firstExistingDirectory(List<String> names) {
+        Path cwd = Path.of(System.getProperty("user.dir")).normalize();
+        Path parent = cwd.getParent();
+        for (String name : names) {
+            Path here = cwd.resolve(name).normalize();
+            if (Files.isDirectory(here)) {
+                return here;
+            }
+            if (parent != null) {
+                Path sibling = parent.resolve(name).normalize();
+                if (Files.isDirectory(sibling)) {
+                    return sibling;
+                }
+            }
+            Path walked = walkForDirectory(name);
+            if (walked != null) {
+                return walked;
             }
         }
         return null;
+    }
+
+    private static boolean skipFile(String name) {
+        if (name.equals(".DS_Store") || name.endsWith(".pyc") || name.endsWith(".log")) {
+            return true;
+        }
+        if (name.equals(".env") || (name.startsWith(".env.") && !name.contains("example"))) {
+            return true;
+        }
+        return false;
     }
 
     static void putText(ZipOutputStream zip, String name, String content) throws IOException {

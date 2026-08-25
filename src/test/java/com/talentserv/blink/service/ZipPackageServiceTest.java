@@ -7,13 +7,14 @@ import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.zip.ZipInputStream;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import com.talentserv.blink.config.BlinkProperties;
-import com.talentserv.blink.domain.Project;
 
 class ZipPackageServiceTest {
 
@@ -21,44 +22,86 @@ class ZipPackageServiceTest {
     Path tempDir;
 
     @Test
-    void zipContainsFrameworkGeneratedProjectAndRequirements() throws Exception {
-        Path framework = tempDir.resolve("automation_sdlc");
-        Files.createDirectories(framework);
-        Files.writeString(framework.resolve("marker.txt"), "sdlc");
+    void zipContainsPilotDemoFolders() throws Exception {
+        Path workspace = tempDir.resolve("workspace");
+        Path sdlc = workspace.resolve("automation_sdlc");
+        Files.createDirectories(sdlc.resolve(".cursor"));
+        Files.writeString(sdlc.resolve("marker.txt"), "sdlc");
+        Files.writeString(sdlc.resolve(".cursor").resolve("rules.md"), "cursor overlay");
 
-        BlinkProperties properties = new BlinkProperties();
-        properties.setAutomationSdlcPath(framework.toString());
-        ZipPackageService service = new ZipPackageService(properties, new SpringBootProjectGenerator());
+        Path ui = workspace.resolve("blink_demo");
+        Files.createDirectories(ui.resolve("src"));
+        Files.writeString(ui.resolve("package.json"), "{\"name\":\"blink-ui\"}");
+        Files.createDirectories(ui.resolve("node_modules"));
+        Files.writeString(ui.resolve("node_modules").resolve("skip.js"), "nope");
 
-        Project project = new Project();
-        project.setProjectName("Banking Application");
-        project.setDescription("Demo banking workspace");
+        Path backend = workspace.resolve("blink-backend");
+        Files.createDirectories(backend.resolve("src"));
+        Files.writeString(backend.resolve("pom.xml"), "<project/>");
+        Files.writeString(backend.resolve(".env"), "SECRET=1");
 
-        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-        service.writeWorkspace(project, "# Banking Application\n\nNeed accounts.\n", buffer);
+        String previous = System.getProperty("user.dir");
+        System.setProperty("user.dir", workspace.toString());
+        try {
+            BlinkProperties properties = new BlinkProperties();
+            properties.setAutomationSdlcPath("automation_sdlc");
+            ZipPackageService service = new ZipPackageService(properties);
 
-        try (ZipInputStream zip = new ZipInputStream(new ByteArrayInputStream(buffer.toByteArray()))) {
-            boolean sawFramework = false;
-            boolean sawPom = false;
-            boolean sawRequirement = false;
-            for (var entry = zip.getNextEntry(); entry != null; entry = zip.getNextEntry()) {
-                if (entry.getName().equals("automation_sdlc/marker.txt")) {
-                    sawFramework = true;
-                }
-                if (entry.getName().equals("banking-application/pom.xml")) {
-                    sawPom = true;
-                    String pom = new String(zip.readAllBytes(), StandardCharsets.UTF_8);
-                    assertThat(pom).contains("4.1.0").contains("25");
-                }
-                if (entry.getName().equals("requirement.md")) {
-                    sawRequirement = true;
-                    String markdown = new String(zip.readAllBytes(), StandardCharsets.UTF_8);
-                    assertThat(markdown).contains("Need accounts");
+            ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+            service.writeWorkspace("# Banking Application\n\nNeed accounts.\n", buffer);
+
+            Set<String> names = new HashSet<>();
+            try (ZipInputStream zip = new ZipInputStream(new ByteArrayInputStream(buffer.toByteArray()))) {
+                for (var entry = zip.getNextEntry(); entry != null; entry = zip.getNextEntry()) {
+                    names.add(entry.getName());
+                    if (entry.getName().equals("MY_PILOT_DEMO/requirement.md")) {
+                        String markdown = new String(zip.readAllBytes(), StandardCharsets.UTF_8);
+                        assertThat(markdown).contains("Need accounts");
+                    }
                 }
             }
-            assertThat(sawFramework).isTrue();
-            assertThat(sawPom).isTrue();
-            assertThat(sawRequirement).isTrue();
+
+            assertThat(names).contains(
+                    "MY_PILOT_DEMO/",
+                    "MY_PILOT_DEMO/.cursor/rules.md",
+                    "MY_PILOT_DEMO/automation_sdlc/marker.txt",
+                    "MY_PILOT_DEMO/blink_ui/package.json",
+                    "MY_PILOT_DEMO/blink_backend/pom.xml",
+                    "MY_PILOT_DEMO/requirement.md"
+            );
+            assertThat(names).noneMatch(name -> name.contains("node_modules"));
+            assertThat(names).noneMatch(name -> name.endsWith(".env"));
+        } finally {
+            System.setProperty("user.dir", previous);
+        }
+    }
+
+    @Test
+    void bundledAutomationSdlcFillsFolderWhenDiskCopyIsMissing() throws Exception {
+        String previous = System.getProperty("user.dir");
+        System.setProperty("user.dir", tempDir.toString());
+        try {
+            BlinkProperties properties = new BlinkProperties();
+            properties.setAutomationSdlcPath(tempDir.resolve("missing-sdlc").toString());
+            ZipPackageService service = new ZipPackageService(properties);
+
+            ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+            service.writeWorkspace("# req\n", buffer);
+
+            Set<String> names = new HashSet<>();
+            try (ZipInputStream zip = new ZipInputStream(new ByteArrayInputStream(buffer.toByteArray()))) {
+                for (var entry = zip.getNextEntry(); entry != null; entry = zip.getNextEntry()) {
+                    names.add(entry.getName());
+                }
+            }
+
+            assertThat(names).anyMatch(name -> name.startsWith("MY_PILOT_DEMO/automation_sdlc/"));
+            assertThat(names).contains("MY_PILOT_DEMO/automation_sdlc/Makefile");
+            assertThat(names).contains("MY_PILOT_DEMO/automation_sdlc/README.md");
+            assertThat(names).anyMatch(name -> name.startsWith("MY_PILOT_DEMO/automation_sdlc/ai-sdlc/"));
+            assertThat(names).noneMatch(name -> name.contains("/.git/"));
+        } finally {
+            System.setProperty("user.dir", previous);
         }
     }
 }

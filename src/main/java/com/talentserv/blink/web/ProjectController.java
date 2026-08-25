@@ -23,7 +23,6 @@ import org.springframework.web.multipart.MultipartFile;
 import com.talentserv.blink.domain.Project;
 import com.talentserv.blink.dto.ProjectRequest;
 import com.talentserv.blink.dto.ProjectResponse;
-import com.talentserv.blink.service.ProjectCodes;
 import com.talentserv.blink.service.ProjectService;
 import com.talentserv.blink.service.RequirementMarkdownService;
 import com.talentserv.blink.service.ZipPackageService;
@@ -79,9 +78,9 @@ public class ProjectController {
         Project project = projectService.requireProject(id);
         String markdown = requirementMarkdownService.toMarkdown(project.getProjectName(), file, requirementsText);
         ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-        zipPackageService.writeWorkspace(project, markdown, buffer);
+        zipPackageService.writeWorkspace(markdown, buffer);
         byte[] bytes = buffer.toByteArray();
-        String filename = ProjectCodes.artifact(project.getProjectName()) + "-workspace.zip";
+        String filename = ZipPackageService.WORKSPACE_ROOT + ".zip";
         ContentDisposition disposition = ContentDisposition.attachment().filename(filename).build();
         return ResponseEntity.ok()
                 .header(HttpHeaders.CONTENT_DISPOSITION, disposition.toString())
