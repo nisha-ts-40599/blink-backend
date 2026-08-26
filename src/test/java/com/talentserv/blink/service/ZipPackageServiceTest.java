@@ -8,6 +8,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 import java.util.zip.ZipInputStream;
 
@@ -28,6 +29,8 @@ class ZipPackageServiceTest {
         Files.createDirectories(sdlc.resolve(".cursor"));
         Files.writeString(sdlc.resolve("marker.txt"), "sdlc");
         Files.writeString(sdlc.resolve(".cursor").resolve("rules.md"), "cursor overlay");
+        Files.createDirectories(sdlc.resolve(".cursor").resolve("commands"));
+        Files.writeString(sdlc.resolve(".cursor").resolve("commands").resolve("setup-new-workspace.md"), "# setup");
 
         Path ui = workspace.resolve("blink_demo");
         Files.createDirectories(ui.resolve("src"));
@@ -47,30 +50,61 @@ class ZipPackageServiceTest {
             properties.setAutomationSdlcPath("automation_sdlc");
             ZipPackageService service = new ZipPackageService(properties);
 
-            ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-            service.writeWorkspace("# Banking Application\n\nNeed accounts.\n", buffer);
+            ZipPackageService.WorkspaceBundle bundle = service.packageWorkspace(
+                    new ZipPackageService.PackageRequest(
+                            "Gymantic",
+                            "# Banking Application\n\nNeed accounts.\n",
+                            List.of(
+                                    new ZipPackageService.RepoFolder("gymantic-backend", "Backend", "API"),
+                                    new ZipPackageService.RepoFolder("gymantic-frontend", "Frontend", "UI"),
+                                    new ZipPackageService.RepoFolder("gymantic-db", "Database", "Schema"),
+                                    new ZipPackageService.RepoFolder("gymantic-infra", "Infrastructure", "IaC")
+                            )
+                    )
+            );
 
             Set<String> names = new HashSet<>();
-            try (ZipInputStream zip = new ZipInputStream(new ByteArrayInputStream(buffer.toByteArray()))) {
+            try (ZipInputStream zip = new ZipInputStream(new ByteArrayInputStream(bundle.zipBytes()))) {
                 for (var entry = zip.getNextEntry(); entry != null; entry = zip.getNextEntry()) {
                     names.add(entry.getName());
-                    if (entry.getName().equals("MY_PILOT_DEMO/requirement.md")) {
+                    if (entry.getName().equals("gymantic-workspace/requirement.md")) {
                         String markdown = new String(zip.readAllBytes(), StandardCharsets.UTF_8);
                         assertThat(markdown).contains("Need accounts");
                     }
                 }
             }
 
+            assertThat(bundle.filename()).isEqualTo("gymantic-workspace.zip");
+            assertThat(bundle.structure())
+                    .extracting(ZipPackageService.WorkspaceEntry::name)
+                    .containsExactly(
+                            "requirement.md",
+                            "blink_backend",
+                            "automation_sdlc",
+                            "blink_demo",
+                            ".cursor",
+                            "gymantic-backend",
+                            "gymantic-frontend",
+                            "gymantic-db",
+                            "gymantic-infra"
+                    );
             assertThat(names).contains(
-                    "MY_PILOT_DEMO/",
-                    "MY_PILOT_DEMO/.cursor/rules.md",
-                    "MY_PILOT_DEMO/automation_sdlc/marker.txt",
-                    "MY_PILOT_DEMO/blink_ui/package.json",
-                    "MY_PILOT_DEMO/blink_backend/pom.xml",
-                    "MY_PILOT_DEMO/requirement.md"
+                    "gymantic-workspace/",
+                    "gymantic-workspace/.cursor/rules.md",
+                    "gymantic-workspace/.cursor/commands/setup-new-workspace.md",
+                    "gymantic-workspace/automation_sdlc/marker.txt",
+                    "gymantic-workspace/blink_demo/package.json",
+                    "gymantic-workspace/blink_backend/pom.xml",
+                    "gymantic-workspace/requirement.md",
+                    "gymantic-workspace/gymantic-backend/README.md",
+                    "gymantic-workspace/gymantic-frontend/README.md",
+                    "gymantic-workspace/gymantic-db/README.md",
+                    "gymantic-workspace/gymantic-infra/README.md"
             );
             assertThat(names).noneMatch(name -> name.contains("node_modules"));
             assertThat(names).noneMatch(name -> name.endsWith(".env"));
+            assertThat(ZipPackageService.encodeStructure(bundle.structure()))
+                    .contains("requirement.md:file", ".cursor:directory");
         } finally {
             System.setProperty("user.dir", previous);
         }
@@ -95,13 +129,36 @@ class ZipPackageServiceTest {
                 }
             }
 
-            assertThat(names).anyMatch(name -> name.startsWith("MY_PILOT_DEMO/automation_sdlc/"));
-            assertThat(names).contains("MY_PILOT_DEMO/automation_sdlc/Makefile");
-            assertThat(names).contains("MY_PILOT_DEMO/automation_sdlc/README.md");
-            assertThat(names).anyMatch(name -> name.startsWith("MY_PILOT_DEMO/automation_sdlc/ai-sdlc/"));
+            assertThat(names).anyMatch(name -> name.startsWith("my-pilot-demo-workspace/automation_sdlc/"));
+            assertThat(names).anyMatch(name ->
+                    name.equals("my-pilot-demo-workspace/automation_sdlc/Makefile")
+                            || name.equals("my-pilot-demo-workspace/automation_sdlc/README.md"));
             assertThat(names).noneMatch(name -> name.contains("/.git/"));
         } finally {
             System.setProperty("user.dir", previous);
         }
+    }
+
+    @Test
+    void configuredReposSkipReservedWorkspaceFolderNames() throws Exception {
+        BlinkProperties properties = new BlinkProperties();
+        properties.setAutomationSdlcPath(tempDir.resolve("missing-sdlc").toString());
+        ZipPackageService service = new ZipPackageService(properties);
+
+        ZipPackageService.WorkspaceBundle bundle = service.packageWorkspace(
+                new ZipPackageService.PackageRequest(
+                        "Gymantic",
+                        "# req\n",
+                        List.of(
+                                new ZipPackageService.RepoFolder("blink_demo", "UI", "collision"),
+                                new ZipPackageService.RepoFolder("gymantic-api", "API", "Custom service")
+                        )
+                )
+        );
+
+        assertThat(bundle.structure())
+                .extracting(ZipPackageService.WorkspaceEntry::name)
+                .contains("blink_demo", "gymantic-api")
+                .doesNotHaveDuplicates();
     }
 }

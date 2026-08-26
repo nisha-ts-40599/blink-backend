@@ -27,7 +27,13 @@ public class CorsConfig {
                         .allowedOriginPatterns(patterns.toArray(String[]::new))
                         .allowedMethods("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
                         .allowedHeaders("*")
-                        .exposedHeaders("Content-Disposition", "X-Blink-Stakeholder-Source")
+                        .exposedHeaders(
+                                "Content-Disposition",
+                                "X-Blink-Stakeholder-Source",
+                                "X-Blink-Workspace-Structure",
+                                "X-Blink-File-Count",
+                                "X-Blink-Next-Command"
+                        )
                         .maxAge(3600);
             }
         };

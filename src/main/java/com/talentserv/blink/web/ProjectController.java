@@ -1,7 +1,7 @@
 package com.talentserv.blink.web;
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 
 import org.springframework.core.io.ByteArrayResource;
@@ -73,19 +73,49 @@ public class ProjectController {
     public ResponseEntity<Resource> download(
             @PathVariable Long id,
             @RequestParam(value = "file", required = false) MultipartFile file,
-            @RequestParam(value = "requirementsText", required = false) String requirementsText
+            @RequestParam(value = "requirementsText", required = false) String requirementsText,
+            @RequestParam(value = "repoName", required = false) List<String> repoNames,
+            @RequestParam(value = "repoPurpose", required = false) List<String> repoPurposes,
+            @RequestParam(value = "repoDescription", required = false) List<String> repoDescriptions
     ) throws IOException {
         Project project = projectService.requireProject(id);
         String markdown = requirementMarkdownService.toMarkdown(project.getProjectName(), file, requirementsText);
-        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-        zipPackageService.writeWorkspace(markdown, buffer);
-        byte[] bytes = buffer.toByteArray();
-        String filename = ZipPackageService.WORKSPACE_ROOT + ".zip";
-        ContentDisposition disposition = ContentDisposition.attachment().filename(filename).build();
+        ZipPackageService.WorkspaceBundle bundle = zipPackageService.packageWorkspace(
+                new ZipPackageService.PackageRequest(
+                        ZipPackageService.workspaceRootName(project.getProjectName()),
+                        markdown,
+                        toRepoFolders(repoNames, repoPurposes, repoDescriptions)
+                )
+        );
+        ContentDisposition disposition = ContentDisposition.attachment().filename(bundle.filename()).build();
         return ResponseEntity.ok()
                 .header(HttpHeaders.CONTENT_DISPOSITION, disposition.toString())
+                .header("X-Blink-Workspace-Structure", ZipPackageService.encodeStructure(bundle.structure()))
+                .header("X-Blink-File-Count", String.valueOf(bundle.fileCount()))
+                .header("X-Blink-Next-Command", ZipPackageService.NEXT_SDLC_COMMAND)
                 .contentType(ZIP)
-                .contentLength(bytes.length)
-                .body(new ByteArrayResource(bytes));
+                .contentLength(bundle.zipBytes().length)
+                .body(new ByteArrayResource(bundle.zipBytes()));
+    }
+
+    private static List<ZipPackageService.RepoFolder> toRepoFolders(
+            List<String> names,
+            List<String> purposes,
+            List<String> descriptions
+    ) {
+        if (names == null || names.isEmpty()) {
+            return List.of();
+        }
+        List<ZipPackageService.RepoFolder> repos = new ArrayList<>();
+        for (int i = 0; i < names.size(); i++) {
+            String name = names.get(i);
+            if (name == null || name.isBlank()) {
+                continue;
+            }
+            String purpose = purposes != null && i < purposes.size() ? purposes.get(i) : "";
+            String description = descriptions != null && i < descriptions.size() ? descriptions.get(i) : "";
+            repos.add(new ZipPackageService.RepoFolder(name, purpose, description));
+        }
+        return repos;
     }
 }
