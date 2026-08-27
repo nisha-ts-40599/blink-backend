@@ -10,7 +10,7 @@ import jakarta.validation.constraints.Size;
 public record ProjectRequest(
         @NotBlank(message = "Project type is required") String projectType,
         @NotBlank(message = "Project name is required") @Size(max = 255) String projectName,
-        @Size(max = 8000) String description,
+        @NotBlank(message = "Project description is required") @Size(max = 8000) String description,
         @NotEmpty(message = "Add at least one stakeholder") List<@Valid StakeholderRequest> stakeholders
 ) {
 }

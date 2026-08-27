@@ -79,9 +79,7 @@ class ZipPackageServiceTest {
                     .extracting(ZipPackageService.WorkspaceEntry::name)
                     .containsExactly(
                             "requirement.md",
-                            "blink_backend",
                             "automation_sdlc",
-                            "blink_demo",
                             ".cursor",
                             "gymantic-backend",
                             "gymantic-frontend",
@@ -93,14 +91,14 @@ class ZipPackageServiceTest {
                     "gymantic-workspace/.cursor/rules.md",
                     "gymantic-workspace/.cursor/commands/setup-new-workspace.md",
                     "gymantic-workspace/automation_sdlc/marker.txt",
-                    "gymantic-workspace/blink_demo/package.json",
-                    "gymantic-workspace/blink_backend/pom.xml",
                     "gymantic-workspace/requirement.md",
                     "gymantic-workspace/gymantic-backend/README.md",
                     "gymantic-workspace/gymantic-frontend/README.md",
                     "gymantic-workspace/gymantic-db/README.md",
                     "gymantic-workspace/gymantic-infra/README.md"
             );
+            assertThat(names).noneMatch(name -> name.contains("/blink_demo/") || name.contains("blink_demo/"));
+            assertThat(names).noneMatch(name -> name.contains("/blink_backend/") || name.contains("blink_backend/"));
             assertThat(names).noneMatch(name -> name.contains("node_modules"));
             assertThat(names).noneMatch(name -> name.endsWith(".env"));
             assertThat(ZipPackageService.encodeStructure(bundle.structure()))
@@ -150,7 +148,7 @@ class ZipPackageServiceTest {
                         "Gymantic",
                         "# req\n",
                         List.of(
-                                new ZipPackageService.RepoFolder("blink_demo", "UI", "collision"),
+                                new ZipPackageService.RepoFolder("automation_sdlc", "SDLC", "collision"),
                                 new ZipPackageService.RepoFolder("gymantic-api", "API", "Custom service")
                         )
                 )
@@ -158,7 +156,7 @@ class ZipPackageServiceTest {
 
         assertThat(bundle.structure())
                 .extracting(ZipPackageService.WorkspaceEntry::name)
-                .contains("blink_demo", "gymantic-api")
+                .contains("automation_sdlc", "gymantic-api")
                 .doesNotHaveDuplicates();
     }
 }

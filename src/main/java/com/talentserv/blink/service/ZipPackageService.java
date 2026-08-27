@@ -36,8 +36,9 @@ public class ZipPackageService {
             "requirement.md",
             ".cursor",
             "automation_sdlc",
+            "blink_demo",
             "blink_backend",
-            "blink_demo"
+            "blink-backend"
     );
 
     private static final Set<String> SKIP_DIR_NAMES = Set.of(
@@ -51,7 +52,10 @@ public class ZipPackageService {
             ".venv-ai-sdlc",
             ".pytest_cache",
             ".mypy_cache",
-            "runtime-data"
+            "runtime-data",
+            "blink_demo",
+            "blink_backend",
+            "blink-backend"
     );
 
     private final BlinkProperties properties;
@@ -105,17 +109,6 @@ public class ZipPackageService {
             files.incrementAndGet();
             structure.add(new WorkspaceEntry("requirement.md", "file"));
 
-            copySharedFolder(
-                    zip,
-                    root,
-                    resolveBackend(),
-                    "blink_backend",
-                    Set.of(),
-                    files,
-                    structure,
-                    missing("blink_backend")
-            );
-
             Path sdlc = resolveAutomationSdlc();
             if (sdlc != null) {
                 copySharedFolder(
@@ -136,17 +129,6 @@ public class ZipPackageService {
                 }
                 structure.add(new WorkspaceEntry("automation_sdlc", "directory"));
             }
-
-            copySharedFolder(
-                    zip,
-                    root,
-                    resolveDir("blink_demo"),
-                    "blink_demo",
-                    Set.of(),
-                    files,
-                    structure,
-                    missing("blink_demo")
-            );
 
             addCursorOverlay(zip, root, files, structure);
             addConfiguredRepos(zip, root, request.repositories(), files, structure);
@@ -398,18 +380,6 @@ public class ZipPackageService {
         return null;
     }
 
-    Path resolveBackend() {
-        Path cwd = Path.of(System.getProperty("user.dir")).normalize();
-        if (Files.isRegularFile(cwd.resolve("pom.xml")) && Files.isDirectory(cwd.resolve("src"))) {
-            return cwd;
-        }
-        return firstExistingDirectory(List.of("blink-backend", "blink_backend"));
-    }
-
-    Path resolveDir(String... names) {
-        return firstExistingDirectory(List.of(names));
-    }
-
     private static boolean isUsableSdlc(Path dir) {
         if (dir == null || !Files.isDirectory(dir)) {
             return false;
@@ -434,29 +404,6 @@ public class ZipPackageService {
                 return candidate;
             }
             dir = dir.getParent();
-        }
-        return null;
-    }
-
-    private static Path firstExistingDirectory(List<String> names) {
-        Path cwd = Path.of(System.getProperty("user.dir")).normalize();
-        Path parent = cwd.getParent();
-        Set<Path> tried = new LinkedHashSet<>();
-        for (String name : names) {
-            Path here = cwd.resolve(name).normalize();
-            if (tried.add(here) && Files.isDirectory(here)) {
-                return here;
-            }
-            if (parent != null) {
-                Path sibling = parent.resolve(name).normalize();
-                if (tried.add(sibling) && Files.isDirectory(sibling)) {
-                    return sibling;
-                }
-            }
-            Path walked = walkForDirectory(name);
-            if (walked != null) {
-                return walked;
-            }
         }
         return null;
     }
