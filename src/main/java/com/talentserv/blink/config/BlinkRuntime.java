@@ -5,12 +5,17 @@ final class BlinkRuntime {
     private BlinkRuntime() {
     }
 
+    /**
+     * True only for Surefire/JUnit launches. Do not treat JUnit on the compile
+     * classpath as a test run — {@code spring-boot:run} still needs {@code .env}.
+     */
     static boolean testsRunning() {
-        try {
-            Class.forName("org.junit.jupiter.api.Test");
+        if (System.getProperty("surefire.test.class.path") != null) {
             return true;
-        } catch (ClassNotFoundException ex) {
-            return false;
         }
+        String command = System.getProperty("sun.java.command", "");
+        return command.contains("surefirebooter")
+                || command.contains("JUnitStarter")
+                || command.contains("org.junit.platform");
     }
 }

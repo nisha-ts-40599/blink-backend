@@ -9,6 +9,23 @@ public record ProjectResponse(
         String description,
         String status,
         String projectType,
-        List<StakeholderResponse> stakeholders
+        List<StakeholderResponse> stakeholders,
+        String workspaceKey,
+        String workspaceUrl,
+        String workspaceStatus
 ) {
+    public ProjectResponse withWorkspace(String key, String url, String workspaceStatus) {
+        return new ProjectResponse(
+                id,
+                projectName,
+                projectCode,
+                description,
+                status,
+                projectType,
+                stakeholders,
+                key,
+                url,
+                workspaceStatus
+        );
+    }
 }

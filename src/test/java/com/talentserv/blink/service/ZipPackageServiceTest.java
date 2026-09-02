@@ -67,14 +67,14 @@ class ZipPackageServiceTest {
             try (ZipInputStream zip = new ZipInputStream(new ByteArrayInputStream(bundle.zipBytes()))) {
                 for (var entry = zip.getNextEntry(); entry != null; entry = zip.getNextEntry()) {
                     names.add(entry.getName());
-                    if (entry.getName().equals("gymantic-workspace/requirement.md")) {
+                    if (entry.getName().equals("gymantic_workspace/requirement.md")) {
                         String markdown = new String(zip.readAllBytes(), StandardCharsets.UTF_8);
                         assertThat(markdown).contains("Need accounts");
                     }
                 }
             }
 
-            assertThat(bundle.filename()).isEqualTo("gymantic-workspace.zip");
+            assertThat(bundle.filename()).isEqualTo("gymantic_workspace.zip");
             assertThat(bundle.structure())
                     .extracting(ZipPackageService.WorkspaceEntry::name)
                     .containsExactly(
@@ -87,15 +87,15 @@ class ZipPackageServiceTest {
                             "gymantic-infra"
                     );
             assertThat(names).contains(
-                    "gymantic-workspace/",
-                    "gymantic-workspace/.cursor/rules.md",
-                    "gymantic-workspace/.cursor/commands/setup-new-workspace.md",
-                    "gymantic-workspace/automation_sdlc/marker.txt",
-                    "gymantic-workspace/requirement.md",
-                    "gymantic-workspace/gymantic-backend/README.md",
-                    "gymantic-workspace/gymantic-frontend/README.md",
-                    "gymantic-workspace/gymantic-db/README.md",
-                    "gymantic-workspace/gymantic-infra/README.md"
+                    "gymantic_workspace/",
+                    "gymantic_workspace/.cursor/rules.md",
+                    "gymantic_workspace/.cursor/commands/setup-new-workspace.md",
+                    "gymantic_workspace/automation_sdlc/marker.txt",
+                    "gymantic_workspace/requirement.md",
+                    "gymantic_workspace/gymantic-backend/README.md",
+                    "gymantic_workspace/gymantic-frontend/README.md",
+                    "gymantic_workspace/gymantic-db/README.md",
+                    "gymantic_workspace/gymantic-infra/README.md"
             );
             assertThat(names).noneMatch(name -> name.contains("/blink_demo/") || name.contains("blink_demo/"));
             assertThat(names).noneMatch(name -> name.contains("/blink_backend/") || name.contains("blink_backend/"));
@@ -127,10 +127,10 @@ class ZipPackageServiceTest {
                 }
             }
 
-            assertThat(names).anyMatch(name -> name.startsWith("my-pilot-demo-workspace/automation_sdlc/"));
+            assertThat(names).anyMatch(name -> name.startsWith("my_pilot_demo_workspace/automation_sdlc/"));
             assertThat(names).anyMatch(name ->
-                    name.equals("my-pilot-demo-workspace/automation_sdlc/Makefile")
-                            || name.equals("my-pilot-demo-workspace/automation_sdlc/README.md"));
+                    name.equals("my_pilot_demo_workspace/automation_sdlc/Makefile")
+                            || name.equals("my_pilot_demo_workspace/automation_sdlc/README.md"));
             assertThat(names).noneMatch(name -> name.contains("/.git/"));
         } finally {
             System.setProperty("user.dir", previous);
@@ -189,7 +189,7 @@ class ZipPackageServiceTest {
             }
         }
 
-        assertThat(names).contains("food-delivery-workspace/.cursor/ai-sdlc/workspace-context.md");
+        assertThat(names).contains("food_delivery_workspace/.cursor/ai-sdlc/workspace-context.md");
         assertThat(names).noneMatch(name -> name.contains("secret.txt"));
         assertThat(names).noneMatch(name -> name.contains("commands/hack.md"));
         assertThat(bundle.structure())

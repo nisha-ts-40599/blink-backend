@@ -5,13 +5,8 @@ Java 25 / Spring Boot 4.1.0 API for the `blink_demo` wizard. It persists the fir
 ## What the 3 screens do
 
 1. **Welcome** — user picks New or Existing. That value is sent with the project on the next screen.
-2. **Project & Stakeholders** — **Save & Continue** `POST`/`PUT`s:
-   - `project` (`project_name`, generated `project_code`, `description`, `status`, `project_type`, audit columns)
-   - `stakeholder` rows (name, email, `role_id` → `stakeholder_roles`)
-3. **Requirements** — **Download Project** returns a zip containing:
-   - `automation_sdlc/`
-   - generated Spring Boot 4.1.0 Maven project
-   - `requirement.md`
+2. **Project & Stakeholders** — **Save & Continue** `POST`/`PUT`s the project and, when S3 is configured, creates `<project_name>_workspace/` in the bucket and copies/clones `automation_sdlc` into it.
+3. **Download Project** — runs `setup-new-workspace` apply, writes `.cursor/` into the same S3 workspace (parallel to `automation_sdlc`), then downloads that workspace as a zip.
 
 ## Run locally
 
@@ -62,7 +57,10 @@ The GitHub repo `blink-backend` already *is* the API. The `Dockerfile` sits at t
 | `BLINK_AGENT_RUNTIME_URL` | `https://blink-agent-runtime.rushikesh-kate.workers.dev` |
 | `BLINK_AGENT_RUNTIME_TOKEN` | Same value as the Worker `AGENT_SERVICE_TOKEN` secret. Required for grooming and zip overlay. |
 | `BLINK_CORS_ORIGINS` | `https://YOUR-FRONTEND.onrender.com` (add after the static site exists; you can also keep `http://localhost:5173`) |
-| `JAVA_OPTS` | `-XX:MaxRAMPercentage=75.0` |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | S3 workspace writes. Required for `<project>_workspace` on Save & Continue. |
+| `AWS_REGION` | `us-west-2` |
+| `S3_BUCKET_NAME` | `blink-ai-dev` |
+| `S3_PUBLIC_BASE_URL` | `https://blink-ai-dev.s3-us-west-2.amazonaws.com/` |
 
 Render sets `PORT` for you. After deploy, note the URL, e.g. `https://blink-backend-xxxx.onrender.com`.
 
@@ -128,7 +126,7 @@ Set `SPRING_JPA_DDL_AUTO=none` after the schema is stable if you do not want Hib
 | POST | `/api/projects` | Save & Continue (first time) |
 | PUT | `/api/projects/{id}` | Save & Continue (after going back) |
 | GET | `/api/projects/{id}` | Reload |
-| POST | `/api/projects/{id}/download` | Download Project (`multipart`: `file`, `requirementsText`) — also runs `setup-new-workspace` apply and adds overlay files |
+| POST | `/api/projects/{id}/download` | Download the S3 workspace zip (`<name>_workspace.zip`). Runs setup apply, writes `.cursor/`, then zips the bucket prefix. |
 | POST | `/api/grooming/clarify` | Hosted `/clarify-requirement` discovery |
 | POST | `/api/projects/{id}/setup` | Hosted `/setup-new-workspace` apply |
 | GET | `/actuator/health` | Health |

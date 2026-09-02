@@ -101,7 +101,7 @@ class SetupAgentServiceTest {
     void applyBestEffortReturnsSkippedWhenWorkerFails() {
         Project project = new Project();
         project.setProjectName("Food Delivery");
-        when(agentRuntimeService.invokeSetupApply(any(), any(), any()))
+        when(agentRuntimeService.invokeSetupApply(any(), any(), any(), any()))
                 .thenThrow(new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "Agent runtime token is not configured."));
 
         var node = service.applyBestEffort(project, "Users order food");

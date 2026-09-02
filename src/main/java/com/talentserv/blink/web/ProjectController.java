@@ -4,6 +4,8 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.core.io.Resource;
 import org.springframework.http.ContentDisposition;
@@ -25,10 +27,15 @@ import com.talentserv.blink.dto.ProjectRequest;
 import com.talentserv.blink.dto.ProjectResponse;
 import com.talentserv.blink.dto.SetupAgentRequest;
 import com.talentserv.blink.dto.SetupAgentResponse;
+import com.talentserv.blink.dto.WorkspaceInventoryResponse;
+import com.talentserv.blink.dto.WorkspaceStatusResponse;
 import com.talentserv.blink.service.ProjectService;
 import com.talentserv.blink.service.RequirementMarkdownService;
+import com.talentserv.blink.service.S3WorkspaceService;
 import com.talentserv.blink.service.SetupAgentService;
+import com.talentserv.blink.service.WorkspaceNames;
 import com.talentserv.blink.service.ZipPackageService;
+import com.talentserv.blink.config.BlinkProperties;
 
 import jakarta.validation.Valid;
 
@@ -36,23 +43,30 @@ import jakarta.validation.Valid;
 @RequestMapping("/api/projects")
 public class ProjectController {
 
+    private static final Logger log = LoggerFactory.getLogger(ProjectController.class);
     private static final MediaType ZIP = MediaType.parseMediaType("application/zip");
 
     private final ProjectService projectService;
     private final RequirementMarkdownService requirementMarkdownService;
     private final ZipPackageService zipPackageService;
     private final SetupAgentService setupAgentService;
+    private final S3WorkspaceService s3WorkspaceService;
+    private final BlinkProperties properties;
 
     public ProjectController(
             ProjectService projectService,
             RequirementMarkdownService requirementMarkdownService,
             ZipPackageService zipPackageService,
-            SetupAgentService setupAgentService
+            SetupAgentService setupAgentService,
+            S3WorkspaceService s3WorkspaceService,
+            BlinkProperties properties
     ) {
         this.projectService = projectService;
         this.requirementMarkdownService = requirementMarkdownService;
         this.zipPackageService = zipPackageService;
         this.setupAgentService = setupAgentService;
+        this.s3WorkspaceService = s3WorkspaceService;
+        this.properties = properties;
     }
 
     @GetMapping
@@ -60,24 +74,50 @@ public class ProjectController {
         return projectService.list();
     }
 
+    @GetMapping("/workspace-tree")
+    public WorkspaceInventoryResponse workspaceTree(@RequestParam String projectName) {
+        return s3WorkspaceService.inspect(projectName);
+    }
+
+    @GetMapping("/workspace-status")
+    public WorkspaceStatusResponse workspaceStatus(@RequestParam String projectName) {
+        WorkspaceStatusResponse progress = s3WorkspaceService.progress(projectName);
+        if (progress == null) {
+            return new WorkspaceStatusResponse(null, null, 0, 0, 0, false);
+        }
+        return progress;
+    }
+
     @PostMapping
     public ProjectResponse create(@Valid @RequestBody ProjectRequest request) {
-        return projectService.create(request);
+        return attachWorkspace(projectService.create(request), true);
     }
 
     @PutMapping("/{id}")
     public ProjectResponse update(@PathVariable Long id, @Valid @RequestBody ProjectRequest request) {
-        return projectService.update(id, request);
+        return attachWorkspace(projectService.update(id, request), true);
     }
 
     @GetMapping("/{id}")
     public ProjectResponse get(@PathVariable Long id) {
-        return projectService.get(id);
+        return attachWorkspace(projectService.get(id), false);
+    }
+
+    @GetMapping("/{id}/workspace")
+    public WorkspaceInventoryResponse workspace(@PathVariable Long id) {
+        Project project = projectService.requireProject(id);
+        return s3WorkspaceService.inspect(project.getProjectName());
     }
 
     @PostMapping("/{id}/setup")
     public SetupAgentResponse setup(@PathVariable Long id, @RequestBody(required = false) SetupAgentRequest request) {
-        return setupAgentService.start(id, request);
+        SetupAgentResponse response = setupAgentService.start(id, request);
+        if (s3WorkspaceService.enabled()) {
+            Project project = projectService.requireProject(id);
+            s3WorkspaceService.provision(project.getProjectName());
+            s3WorkspaceService.putCursorOverlay(project.getProjectName(), SetupAgentService.overlayFilesFromResponse(response));
+        }
+        return response;
     }
 
     @PostMapping(path = "/{id}/download", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -90,10 +130,28 @@ public class ProjectController {
             @RequestParam(value = "repoDescription", required = false) List<String> repoDescriptions
     ) throws IOException {
         Project project = projectService.requireProject(id);
+        long started = System.currentTimeMillis();
+        log.info("Download start projectId={} name={}", id, project.getProjectName());
         String markdown = requirementMarkdownService.toMarkdown(project.getProjectName(), file, requirementsText);
+        log.info("Download calling setup-new-workspace");
         var setup = setupAgentService.applyBestEffort(project, markdown);
         var overlay = SetupAgentService.overlayFiles(setup);
-        ZipPackageService.WorkspaceBundle bundle = zipPackageService.packageWorkspace(
+        log.info(
+                "Download setup status={} overlayFiles={} elapsedMs={}",
+                setup.path("status").asText(""),
+                overlay.size(),
+                System.currentTimeMillis() - started
+        );
+        ZipPackageService.WorkspaceBundle bundle;
+        if (s3WorkspaceService.enabled()) {
+            log.info("Download writing requirement and .cursor overlay to S3 without waiting for template copy");
+            s3WorkspaceService.provisionAsync(project.getProjectName());
+            s3WorkspaceService.putRequirement(project.getProjectName(), markdown);
+            s3WorkspaceService.putCursorOverlay(project.getProjectName(), overlay);
+            log.info("Download S3 overlay written elapsedMs={}", System.currentTimeMillis() - started);
+        }
+        log.info("Download packaging zip from local automation_sdlc");
+        bundle = zipPackageService.packageWorkspace(
                 new ZipPackageService.PackageRequest(
                         ZipPackageService.workspaceRootName(project.getProjectName()),
                         markdown,
@@ -101,11 +159,18 @@ public class ProjectController {
                         overlay
                 )
         );
+        log.info(
+                "Download zip ready files={} bytes={} elapsedMs={}",
+                bundle.fileCount(),
+                bundle.zipBytes().length,
+                System.currentTimeMillis() - started
+        );
         String nextCommand = setup.path("nextCommand").asText(ZipPackageService.NEXT_SDLC_COMMAND);
         if (!nextCommand.isBlank() && !nextCommand.startsWith("/")) {
             nextCommand = "/" + nextCommand;
         }
         ContentDisposition disposition = ContentDisposition.attachment().filename(bundle.filename()).build();
+        String folderStatus = s3WorkspaceService.enabled() ? s3WorkspaceService.status(project.getProjectName()) : "";
         return ResponseEntity.ok()
                 .header(HttpHeaders.CONTENT_DISPOSITION, disposition.toString())
                 .header("X-Blink-Workspace-Structure", ZipPackageService.encodeStructure(bundle.structure()))
@@ -114,6 +179,7 @@ public class ProjectController {
                 .header("X-Blink-Setup-Status", setup.path("status").asText(""))
                 .header("X-Blink-Identity-Source", setup.path("identitySource").asText(""))
                 .header("X-Blink-Overlay-Count", String.valueOf(overlay.size()))
+                .header("X-Blink-Folder-Status", folderStatus == null ? "" : folderStatus)
                 .contentType(ZIP)
                 .contentLength(bundle.zipBytes().length)
                 .body(new ByteArrayResource(bundle.zipBytes()));
@@ -138,5 +204,20 @@ public class ProjectController {
             repos.add(new ZipPackageService.RepoFolder(name, purpose, description));
         }
         return repos;
+    }
+
+    private ProjectResponse attachWorkspace(ProjectResponse project, boolean provision) {
+        if (project == null || project.projectName() == null || project.projectName().isBlank()) {
+            return project;
+        }
+        String key = WorkspaceNames.folder(project.projectName());
+        String url = WorkspaceNames.publicUrl(properties.getS3PublicBaseUrl(), project.projectName());
+        if (provision && s3WorkspaceService.enabled()) {
+            s3WorkspaceService.provisionAsync(project.projectName());
+        }
+        if (!s3WorkspaceService.enabled()) {
+            return project.withWorkspace(null, null, null);
+        }
+        return project.withWorkspace(key, url, s3WorkspaceService.status(project.projectName()));
     }
 }

@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
+import org.apache.hc.core5.util.Timeout;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -51,10 +52,27 @@ public class SetupAgentService {
 
     /** Zip download still succeeds if the hosted setup command is unavailable. */
     public JsonNode applyBestEffort(Project project, String requirementText) {
+        long started = System.currentTimeMillis();
         try {
-            return apply(project, requirementText);
+            log.info("Download overlay calling setup-new-workspace project={}", project.getProjectName());
+            JsonNode result = agentRuntimeService.invokeSetupApply(
+                    project.getProjectName(),
+                    trimToNull(requirementText),
+                    project.getDescription(),
+                    Timeout.ofSeconds(20)
+            );
+            log.info(
+                    "Download overlay ready status={} ms={}",
+                    result.path("status").asText(""),
+                    System.currentTimeMillis() - started
+            );
+            return result;
         } catch (RuntimeException ex) {
-            log.warn("Setup overlay skipped: {}", ex.getMessage());
+            log.warn(
+                    "Setup overlay skipped after {}ms: {}",
+                    System.currentTimeMillis() - started,
+                    ex.getMessage()
+            );
             ObjectNode node = MAPPER.createObjectNode();
             node.put("status", "skipped");
             node.put("message", ex.getMessage() == null ? "Setup overlay was skipped." : ex.getMessage());
@@ -73,6 +91,20 @@ public class SetupAgentService {
             String content = item.path("content").asText("");
             if (path != null) {
                 files.add(new ZipPackageService.OverlayFile(path, content));
+            }
+        }
+        return files;
+    }
+
+    public static List<ZipPackageService.OverlayFile> overlayFilesFromResponse(SetupAgentResponse response) {
+        List<ZipPackageService.OverlayFile> files = new ArrayList<>();
+        if (response == null || response.overlayFiles() == null) {
+            return files;
+        }
+        for (SetupAgentResponse.OverlayFile item : response.overlayFiles()) {
+            String path = ZipPackageService.sanitizeOverlayPath(item.path());
+            if (path != null) {
+                files.add(new ZipPackageService.OverlayFile(path, item.content() == null ? "" : item.content()));
             }
         }
         return files;

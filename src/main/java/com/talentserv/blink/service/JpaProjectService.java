@@ -132,7 +132,10 @@ public class JpaProjectService implements ProjectService {
                 project.getDescription(),
                 null,
                 toApiType(project.getProjectType()),
-                stakeholders);
+                stakeholders,
+                null,
+                null,
+                null);
     }
 
     private static String toStorageType(String projectType) {

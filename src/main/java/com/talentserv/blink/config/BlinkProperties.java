@@ -35,6 +35,13 @@ public class BlinkProperties {
      */
     private String agentRuntimeToken = "";
 
+    private String awsAccessKeyId = "";
+    private String awsSecretAccessKey = "";
+    private String awsRegion = "us-west-2";
+    private String s3BucketName = "";
+    private String s3PublicBaseUrl = "";
+    private String automationSdlcGitUrl = "https://github.com/AtulTalentServ/automation_sdlc.git";
+
     public String getAutomationSdlcPath() {
         return automationSdlcPath;
     }
@@ -81,5 +88,61 @@ public class BlinkProperties {
 
     public void setAgentRuntimeToken(String agentRuntimeToken) {
         this.agentRuntimeToken = agentRuntimeToken;
+    }
+
+    public String getAwsAccessKeyId() {
+        return awsAccessKeyId;
+    }
+
+    public void setAwsAccessKeyId(String awsAccessKeyId) {
+        this.awsAccessKeyId = awsAccessKeyId;
+    }
+
+    public String getAwsSecretAccessKey() {
+        return awsSecretAccessKey;
+    }
+
+    public void setAwsSecretAccessKey(String awsSecretAccessKey) {
+        this.awsSecretAccessKey = awsSecretAccessKey;
+    }
+
+    public String getAwsRegion() {
+        return awsRegion;
+    }
+
+    public void setAwsRegion(String awsRegion) {
+        this.awsRegion = awsRegion;
+    }
+
+    public String getS3BucketName() {
+        return s3BucketName;
+    }
+
+    public void setS3BucketName(String s3BucketName) {
+        this.s3BucketName = s3BucketName;
+    }
+
+    public String getS3PublicBaseUrl() {
+        return s3PublicBaseUrl;
+    }
+
+    public void setS3PublicBaseUrl(String s3PublicBaseUrl) {
+        this.s3PublicBaseUrl = s3PublicBaseUrl;
+    }
+
+    public String getAutomationSdlcGitUrl() {
+        return automationSdlcGitUrl;
+    }
+
+    public void setAutomationSdlcGitUrl(String automationSdlcGitUrl) {
+        this.automationSdlcGitUrl = automationSdlcGitUrl;
+    }
+
+    public boolean s3Enabled() {
+        return !blank(s3BucketName) && !blank(awsAccessKeyId) && !blank(awsSecretAccessKey) && !blank(awsRegion);
+    }
+
+    private static boolean blank(String value) {
+        return value == null || value.isBlank();
     }
 }

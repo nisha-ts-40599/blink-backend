@@ -20,12 +20,16 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 import java.util.zip.ZipOutputStream;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import com.talentserv.blink.config.BlinkProperties;
 
 @Service
 public class ZipPackageService {
+
+    private static final Logger log = LoggerFactory.getLogger(ZipPackageService.class);
 
     public static final String WORKSPACE_ROOT = "MY_PILOT_DEMO";
     public static final String DEFAULT_ARCHIVE_NAME = WORKSPACE_ROOT + ".zip";
@@ -36,23 +40,6 @@ public class ZipPackageService {
             "requirement.md",
             ".cursor",
             "automation_sdlc",
-            "blink_demo",
-            "blink_backend",
-            "blink-backend"
-    );
-
-    private static final Set<String> SKIP_DIR_NAMES = Set.of(
-            ".git",
-            ".idea",
-            "node_modules",
-            "target",
-            "dist",
-            "__pycache__",
-            ".venv",
-            ".venv-ai-sdlc",
-            ".pytest_cache",
-            ".mypy_cache",
-            "runtime-data",
             "blink_demo",
             "blink_backend",
             "blink-backend"
@@ -107,7 +94,10 @@ public class ZipPackageService {
     }
 
     public WorkspaceBundle packageWorkspace(PackageRequest request) throws IOException {
+        long started = System.currentTimeMillis();
         String root = workspaceRootName(request.workspaceRoot());
+        Path sdlc = resolveAutomationSdlc();
+        log.info("Zip start root={} automationSdlc={}", root, sdlc);
         List<WorkspaceEntry> structure = new ArrayList<>();
         AtomicInteger files = new AtomicInteger();
         ByteArrayOutputStream buffer = new ByteArrayOutputStream();
@@ -122,7 +112,6 @@ public class ZipPackageService {
             files.incrementAndGet();
             structure.add(new WorkspaceEntry("requirement.md", "file"));
 
-            Path sdlc = resolveAutomationSdlc();
             if (sdlc != null) {
                 copySharedFolder(
                         zip,
@@ -147,15 +136,19 @@ public class ZipPackageService {
             addAgentOverlay(zip, root, request.overlayFiles(), files, structure);
             addConfiguredRepos(zip, root, request.repositories(), files, structure);
         }
-        return new WorkspaceBundle(buffer.toByteArray(), root + ".zip", List.copyOf(structure), files.get());
+        WorkspaceBundle bundle = new WorkspaceBundle(buffer.toByteArray(), root + ".zip", List.copyOf(structure), files.get());
+        log.info(
+                "Zip ready root={} files={} bytes={} ms={}",
+                root,
+                bundle.fileCount(),
+                bundle.zipBytes().length,
+                System.currentTimeMillis() - started
+        );
+        return bundle;
     }
 
     public static String workspaceRootName(String projectName) {
-        String slug = slugify(projectName);
-        if (slug.isBlank()) {
-            slug = "project";
-        }
-        return slug.endsWith("-workspace") ? slug : slug + "-workspace";
+        return WorkspaceNames.folder(projectName);
     }
 
     public static String encodeStructure(List<WorkspaceEntry> structure) {
@@ -330,7 +323,7 @@ public class ZipPackageService {
                     return FileVisitResult.CONTINUE;
                 }
                 String name = dir.getFileName().toString();
-                if (SKIP_DIR_NAMES.contains(name) || extraSkipDirs.contains(name)) {
+                if (FrameworkKitFilter.skipDirectory(name) || extraSkipDirs.contains(name)) {
                     return FileVisitResult.SKIP_SUBTREE;
                 }
                 return FileVisitResult.CONTINUE;
@@ -404,7 +397,7 @@ public class ZipPackageService {
             return true;
         }
         for (String part : parts) {
-            if (SKIP_DIR_NAMES.contains(part)) {
+            if (FrameworkKitFilter.skipDirectory(part)) {
                 return true;
             }
         }
@@ -456,13 +449,7 @@ public class ZipPackageService {
     }
 
     private static boolean skipFile(String name) {
-        if (name.equals(".DS_Store") || name.endsWith(".pyc") || name.endsWith(".log")) {
-            return true;
-        }
-        if (name.equals(".env") || (name.startsWith(".env.") && !name.contains("example"))) {
-            return true;
-        }
-        return false;
+        return FrameworkKitFilter.skipFile(name);
     }
 
     static void putText(ZipOutputStream zip, String name, String content) throws IOException {

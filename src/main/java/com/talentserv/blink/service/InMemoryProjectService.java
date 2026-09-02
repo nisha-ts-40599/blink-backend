@@ -99,7 +99,10 @@ public class InMemoryProjectService implements ProjectService {
                 project.getDescription(),
                 null,
                 toApiType(project.getProjectType()),
-                stored.stakeholders());
+                stored.stakeholders(),
+                null,
+                null,
+                null);
     }
 
     private static String toStorageType(String projectType) {

@@ -97,6 +97,15 @@ public class AgentRuntimeService {
     }
 
     public JsonNode invokeSetupApply(String projectName, String requirementText, String projectDescription) {
+        return invokeSetupApply(projectName, requirementText, projectDescription, null);
+    }
+
+    public JsonNode invokeSetupApply(
+            String projectName,
+            String requirementText,
+            String projectDescription,
+            Timeout responseTimeout
+    ) {
         ObjectNode payload = MAPPER.createObjectNode();
         payload.put("command", "setup-new-workspace");
         payload.put("mode", "apply");
@@ -107,10 +116,14 @@ public class AgentRuntimeService {
         if (projectDescription != null && !projectDescription.isBlank()) {
             payload.put("projectDescription", projectDescription.trim());
         }
-        return invoke(payload);
+        return invoke(payload, responseTimeout);
     }
 
     public JsonNode invoke(JsonNode body) {
+        return invoke(body, null);
+    }
+
+    public JsonNode invoke(JsonNode body, Timeout responseTimeout) {
         String url = properties.getAgentRuntimeUrl();
         if (url == null || url.isBlank()) {
             throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "Agent runtime URL is not configured.");
@@ -133,7 +146,18 @@ public class AgentRuntimeService {
         post.setHeader("User-Agent", "Blink-Backend/1.0");
         post.setHeader("Authorization", "Bearer " + token.trim());
         post.setEntity(new StringEntity(payload.toString(), ContentType.APPLICATION_JSON));
+        if (responseTimeout != null) {
+            post.setConfig(RequestConfig.custom()
+                    .setResponseTimeout(responseTimeout)
+                    .setConnectionRequestTimeout(Timeout.ofSeconds(5))
+                    .build());
+        }
 
+        log.info(
+                "Calling agent runtime command={} timeoutSec={}",
+                payload.path("command").asText(""),
+                responseTimeout == null ? 90 : responseTimeout.toSeconds()
+        );
         try {
             return client.execute(post, response -> {
                 String raw = response.getEntity() == null
@@ -147,6 +171,7 @@ public class AgentRuntimeService {
                 }
                 int statusCode = response.getCode();
                 if (statusCode >= 200 && statusCode < 300) {
+                    log.info("Agent runtime {} HTTP {}", payload.path("command").asText(""), statusCode);
                     return parsed;
                 }
                 if (statusCode == 401 || statusCode == 403) {
