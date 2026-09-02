@@ -3,6 +3,7 @@ package com.talentserv.blink.service;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.context.annotation.Profile;
 
 import com.talentserv.blink.config.BlinkProperties;
 import com.talentserv.blink.domain.AppUser;
@@ -10,6 +11,7 @@ import com.talentserv.blink.error.ApiException;
 import com.talentserv.blink.repo.AppUserRepository;
 
 @Service
+@Profile("!nodb")
 public class DemoUserService {
 
     public static final String STATUS_ACTIVE = "ACTIVE";

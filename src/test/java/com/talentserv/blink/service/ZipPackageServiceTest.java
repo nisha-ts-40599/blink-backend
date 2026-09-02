@@ -159,4 +159,52 @@ class ZipPackageServiceTest {
                 .contains("automation_sdlc", "gymantic-api")
                 .doesNotHaveDuplicates();
     }
+
+    @Test
+    void overlayFilesAreWrittenUnderCursorAiSdlc() throws Exception {
+        BlinkProperties properties = new BlinkProperties();
+        properties.setAutomationSdlcPath(tempDir.resolve("missing-sdlc").toString());
+        ZipPackageService service = new ZipPackageService(properties);
+
+        ZipPackageService.WorkspaceBundle bundle = service.packageWorkspace(
+                new ZipPackageService.PackageRequest(
+                        "Food Delivery",
+                        "# req\n",
+                        List.of(),
+                        List.of(
+                                new ZipPackageService.OverlayFile(
+                                        ".cursor/ai-sdlc/workspace-context.md",
+                                        "# Food Delivery\n"
+                                ),
+                                new ZipPackageService.OverlayFile(".cursor/commands/hack.md", "nope"),
+                                new ZipPackageService.OverlayFile("../secret.txt", "nope")
+                        )
+                )
+        );
+
+        Set<String> names = new HashSet<>();
+        try (ZipInputStream zip = new ZipInputStream(new ByteArrayInputStream(bundle.zipBytes()))) {
+            for (var entry = zip.getNextEntry(); entry != null; entry = zip.getNextEntry()) {
+                names.add(entry.getName());
+            }
+        }
+
+        assertThat(names).contains("food-delivery-workspace/.cursor/ai-sdlc/workspace-context.md");
+        assertThat(names).noneMatch(name -> name.contains("secret.txt"));
+        assertThat(names).noneMatch(name -> name.contains("commands/hack.md"));
+        assertThat(bundle.structure())
+                .extracting(ZipPackageService.WorkspaceEntry::name)
+                .contains(".cursor/ai-sdlc");
+    }
+
+    @Test
+    void overlayPathMustStayUnderCursorAiSdlc() {
+        assertThat(ZipPackageService.sanitizeOverlayPath(".cursor/ai-sdlc/workspace-context.md"))
+                .isEqualTo(".cursor/ai-sdlc/workspace-context.md");
+        assertThat(ZipPackageService.sanitizeOverlayPath(".cursor/commands/setup-new-workspace.md")).isNull();
+        assertThat(ZipPackageService.sanitizeOverlayPath(".cursor/ai-sdlc/foo/../../secret.txt")).isNull();
+        assertThat(ZipPackageService.sanitizeOverlayPath(".cursor/ai-sdlc")).isNull();
+        assertThat(ZipPackageService.sanitizeOverlayPath("/.cursor/ai-sdlc/workspace-context.md"))
+                .isEqualTo(".cursor/ai-sdlc/workspace-context.md");
+    }
 }

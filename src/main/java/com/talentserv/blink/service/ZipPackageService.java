@@ -67,9 +67,22 @@ public class ZipPackageService {
     public record RepoFolder(String name, String purpose, String description) {
     }
 
-    public record PackageRequest(String workspaceRoot, String requirementMarkdown, List<RepoFolder> repositories) {
+    public record OverlayFile(String path, String content) {
+    }
+
+    public record PackageRequest(
+            String workspaceRoot,
+            String requirementMarkdown,
+            List<RepoFolder> repositories,
+            List<OverlayFile> overlayFiles
+    ) {
         public PackageRequest {
             repositories = repositories == null ? List.of() : List.copyOf(repositories);
+            overlayFiles = overlayFiles == null ? List.of() : List.copyOf(overlayFiles);
+        }
+
+        public PackageRequest(String workspaceRoot, String requirementMarkdown, List<RepoFolder> repositories) {
+            this(workspaceRoot, requirementMarkdown, repositories, List.of());
         }
     }
 
@@ -131,6 +144,7 @@ public class ZipPackageService {
             }
 
             addCursorOverlay(zip, root, files, structure);
+            addAgentOverlay(zip, root, request.overlayFiles(), files, structure);
             addConfiguredRepos(zip, root, request.repositories(), files, structure);
         }
         return new WorkspaceBundle(buffer.toByteArray(), root + ".zip", List.copyOf(structure), files.get());
@@ -165,6 +179,39 @@ public class ZipPackageService {
             files.incrementAndGet();
         }
         structure.add(new WorkspaceEntry(".cursor", "directory"));
+    }
+
+    private void addAgentOverlay(
+            ZipOutputStream zip,
+            String root,
+            List<OverlayFile> overlayFiles,
+            AtomicInteger files,
+            List<WorkspaceEntry> structure
+    ) throws IOException {
+        boolean added = false;
+        for (OverlayFile file : overlayFiles) {
+            String relative = sanitizeOverlayPath(file.path());
+            if (relative == null) {
+                continue;
+            }
+            putText(zip, zipPath(root, relative), file.content() == null ? "" : file.content());
+            files.incrementAndGet();
+            added = true;
+        }
+        if (added) {
+            structure.add(new WorkspaceEntry(".cursor/ai-sdlc", "directory"));
+        }
+    }
+
+    static String sanitizeOverlayPath(String path) {
+        if (path == null || path.isBlank()) {
+            return null;
+        }
+        String normalized = path.replace('\\', '/').replaceFirst("^/+", "");
+        if (normalized.contains("..") || !normalized.startsWith(".cursor/ai-sdlc/") || normalized.endsWith("/")) {
+            return null;
+        }
+        return normalized;
     }
 
     private void addConfiguredRepos(

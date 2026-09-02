@@ -32,7 +32,10 @@ public class CorsConfig {
                                 "X-Blink-Stakeholder-Source",
                                 "X-Blink-Workspace-Structure",
                                 "X-Blink-File-Count",
-                                "X-Blink-Next-Command"
+                                "X-Blink-Next-Command",
+                                "X-Blink-Setup-Status",
+                                "X-Blink-Identity-Source",
+                                "X-Blink-Overlay-Count"
                         )
                         .maxAge(3600);
             }

@@ -20,6 +20,21 @@ public class BlinkProperties {
      */
     private String corsOrigins = "http://localhost:5173,http://127.0.0.1:5173";
 
+    /**
+     * Virtual AWS / local setup agent endpoint (POST JSON, returns setup proposal).
+     */
+    private String setupAgentUrl = "http://127.0.0.1:8091/setup/start";
+
+    /**
+     * Cloudflare Worker agent runtime (wrangler dev defaults to :8787).
+     */
+    private String agentRuntimeUrl = "https://blink-agent-runtime.rushikesh-kate.workers.dev";
+
+    /**
+     * Shared bearer token between Blink Backend and the Worker.
+     */
+    private String agentRuntimeToken = "";
+
     public String getAutomationSdlcPath() {
         return automationSdlcPath;
     }
@@ -42,5 +57,29 @@ public class BlinkProperties {
 
     public void setCorsOrigins(String corsOrigins) {
         this.corsOrigins = corsOrigins;
+    }
+
+    public String getSetupAgentUrl() {
+        return setupAgentUrl;
+    }
+
+    public void setSetupAgentUrl(String setupAgentUrl) {
+        this.setupAgentUrl = setupAgentUrl;
+    }
+
+    public String getAgentRuntimeUrl() {
+        return agentRuntimeUrl;
+    }
+
+    public void setAgentRuntimeUrl(String agentRuntimeUrl) {
+        this.agentRuntimeUrl = agentRuntimeUrl;
+    }
+
+    public String getAgentRuntimeToken() {
+        return agentRuntimeToken;
+    }
+
+    public void setAgentRuntimeToken(String agentRuntimeToken) {
+        this.agentRuntimeToken = agentRuntimeToken;
     }
 }

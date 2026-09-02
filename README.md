@@ -15,15 +15,20 @@ Java 25 / Spring Boot 4.1.0 API for the `blink_demo` wizard. It persists the fir
 
 ## Run locally
 
-JDK 25 and Maven 3.9+ are required. Copy `.env.example` to `.env` in this folder and put your Render **External** Database URL in `DATABASE_URL`. `.env` is gitignored.
+JDK 25 is required. This repo includes the Maven Wrapper, so you do not need a global `mvn` install.
+
+**Local without a database:** set `SPRING_PROFILES_ACTIVE=nodb` in `.env`. Projects are kept in memory for that Java process. Grooming and download still work.
+
+When you add Postgres later, remove that profile and set `DATABASE_URL`. Always set `BLINK_AGENT_RUNTIME_TOKEN` to the Worker `AGENT_SERVICE_TOKEN`. `.env` is gitignored.
 
 ```powershell
 Copy-Item .env.example .env
-# edit .env and set DATABASE_URL=postgres://...
-mvn spring-boot:run
+# edit .env: BLINK_AGENT_RUNTIME_TOKEN (and keep SPRING_PROFILES_ACTIVE=nodb for now)
+$env:JAVA_HOME = "$env:USERPROFILE\tools\jdk-25"
+.\mvnw.cmd spring-boot:run
 ```
 
-The API listens on `http://localhost:8090`. Vite in `blink_demo` already proxies `/api` there.
+The API listens on `http://localhost:8090`. Vite (`npm run dev`) proxies `/api` to that local port.
 
 Then in another terminal:
 
@@ -54,6 +59,8 @@ The GitHub repo `blink-backend` already *is* the API. The `Dockerfile` sits at t
 | Key | Value |
 | --- | --- |
 | `DATABASE_URL` | **Required.** Link the existing Postgres service, or paste the **Internal** Database URL. Without this the API tries `localhost` and Hibernate fails. |
+| `BLINK_AGENT_RUNTIME_URL` | `https://blink-agent-runtime.rushikesh-kate.workers.dev` |
+| `BLINK_AGENT_RUNTIME_TOKEN` | Same value as the Worker `AGENT_SERVICE_TOKEN` secret. Required for grooming and zip overlay. |
 | `BLINK_CORS_ORIGINS` | `https://YOUR-FRONTEND.onrender.com` (add after the static site exists; you can also keep `http://localhost:5173`) |
 | `JAVA_OPTS` | `-XX:MaxRAMPercentage=75.0` |
 
@@ -121,7 +128,9 @@ Set `SPRING_JPA_DDL_AUTO=none` after the schema is stable if you do not want Hib
 | POST | `/api/projects` | Save & Continue (first time) |
 | PUT | `/api/projects/{id}` | Save & Continue (after going back) |
 | GET | `/api/projects/{id}` | Reload |
-| POST | `/api/projects/{id}/download` | Download Project (`multipart`: `file`, `requirementsText`) |
+| POST | `/api/projects/{id}/download` | Download Project (`multipart`: `file`, `requirementsText`) — also runs `setup-new-workspace` apply and adds overlay files |
+| POST | `/api/grooming/clarify` | Hosted `/clarify-requirement` discovery |
+| POST | `/api/projects/{id}/setup` | Hosted `/setup-new-workspace` apply |
 | GET | `/actuator/health` | Health |
 
 ## Table mapping

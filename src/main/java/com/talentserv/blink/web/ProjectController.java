@@ -23,8 +23,11 @@ import org.springframework.web.multipart.MultipartFile;
 import com.talentserv.blink.domain.Project;
 import com.talentserv.blink.dto.ProjectRequest;
 import com.talentserv.blink.dto.ProjectResponse;
+import com.talentserv.blink.dto.SetupAgentRequest;
+import com.talentserv.blink.dto.SetupAgentResponse;
 import com.talentserv.blink.service.ProjectService;
 import com.talentserv.blink.service.RequirementMarkdownService;
+import com.talentserv.blink.service.SetupAgentService;
 import com.talentserv.blink.service.ZipPackageService;
 
 import jakarta.validation.Valid;
@@ -38,15 +41,18 @@ public class ProjectController {
     private final ProjectService projectService;
     private final RequirementMarkdownService requirementMarkdownService;
     private final ZipPackageService zipPackageService;
+    private final SetupAgentService setupAgentService;
 
     public ProjectController(
             ProjectService projectService,
             RequirementMarkdownService requirementMarkdownService,
-            ZipPackageService zipPackageService
+            ZipPackageService zipPackageService,
+            SetupAgentService setupAgentService
     ) {
         this.projectService = projectService;
         this.requirementMarkdownService = requirementMarkdownService;
         this.zipPackageService = zipPackageService;
+        this.setupAgentService = setupAgentService;
     }
 
     @GetMapping
@@ -69,6 +75,11 @@ public class ProjectController {
         return projectService.get(id);
     }
 
+    @PostMapping("/{id}/setup")
+    public SetupAgentResponse setup(@PathVariable Long id, @RequestBody(required = false) SetupAgentRequest request) {
+        return setupAgentService.start(id, request);
+    }
+
     @PostMapping(path = "/{id}/download", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<Resource> download(
             @PathVariable Long id,
@@ -80,19 +91,29 @@ public class ProjectController {
     ) throws IOException {
         Project project = projectService.requireProject(id);
         String markdown = requirementMarkdownService.toMarkdown(project.getProjectName(), file, requirementsText);
+        var setup = setupAgentService.applyBestEffort(project, markdown);
+        var overlay = SetupAgentService.overlayFiles(setup);
         ZipPackageService.WorkspaceBundle bundle = zipPackageService.packageWorkspace(
                 new ZipPackageService.PackageRequest(
                         ZipPackageService.workspaceRootName(project.getProjectName()),
                         markdown,
-                        toRepoFolders(repoNames, repoPurposes, repoDescriptions)
+                        toRepoFolders(repoNames, repoPurposes, repoDescriptions),
+                        overlay
                 )
         );
+        String nextCommand = setup.path("nextCommand").asText(ZipPackageService.NEXT_SDLC_COMMAND);
+        if (!nextCommand.isBlank() && !nextCommand.startsWith("/")) {
+            nextCommand = "/" + nextCommand;
+        }
         ContentDisposition disposition = ContentDisposition.attachment().filename(bundle.filename()).build();
         return ResponseEntity.ok()
                 .header(HttpHeaders.CONTENT_DISPOSITION, disposition.toString())
                 .header("X-Blink-Workspace-Structure", ZipPackageService.encodeStructure(bundle.structure()))
                 .header("X-Blink-File-Count", String.valueOf(bundle.fileCount()))
-                .header("X-Blink-Next-Command", ZipPackageService.NEXT_SDLC_COMMAND)
+                .header("X-Blink-Next-Command", nextCommand)
+                .header("X-Blink-Setup-Status", setup.path("status").asText(""))
+                .header("X-Blink-Identity-Source", setup.path("identitySource").asText(""))
+                .header("X-Blink-Overlay-Count", String.valueOf(overlay.size()))
                 .contentType(ZIP)
                 .contentLength(bundle.zipBytes().length)
                 .body(new ByteArrayResource(bundle.zipBytes()));
