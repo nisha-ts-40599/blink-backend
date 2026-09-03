@@ -7,4 +7,5 @@ target/
 .vscode/
 *.log
 .env
+.blink-nodb.json
 .DS_Store

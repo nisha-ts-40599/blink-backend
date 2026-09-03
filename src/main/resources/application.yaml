@@ -45,3 +45,12 @@ blink:
   automation-sdlc-path: ${BLINK_AUTOMATION_SDLC_PATH:../automation_sdlc}
   demo-user-email: blink.system@talentserv.com
   cors-origins: ${BLINK_CORS_ORIGINS:http://localhost:5173,http://127.0.0.1:5173}
+  setup-agent-url: ${BLINK_SETUP_AGENT_URL:http://127.0.0.1:8091/setup/start}
+  agent-runtime-url: ${BLINK_AGENT_RUNTIME_URL:https://blink-agent-runtime.rushikesh-kate.workers.dev}
+  agent-runtime-token: ${BLINK_AGENT_RUNTIME_TOKEN:}
+  aws-access-key-id: ${AWS_ACCESS_KEY_ID:}
+  aws-secret-access-key: ${AWS_SECRET_ACCESS_KEY:}
+  aws-region: ${AWS_REGION:us-west-2}
+  s3-bucket-name: ${S3_BUCKET_NAME:}
+  s3-public-base-url: ${S3_PUBLIC_BASE_URL:}
+  automation-sdlc-git-url: ${BLINK_AUTOMATION_SDLC_GIT_URL:https://github.com/AtulTalentServ/automation_sdlc.git}

@@ -20,12 +20,16 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 import java.util.zip.ZipOutputStream;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import com.talentserv.blink.config.BlinkProperties;
 
 @Service
 public class ZipPackageService {
+
+    private static final Logger log = LoggerFactory.getLogger(ZipPackageService.class);
 
     public static final String WORKSPACE_ROOT = "MY_PILOT_DEMO";
     public static final String DEFAULT_ARCHIVE_NAME = WORKSPACE_ROOT + ".zip";
@@ -41,23 +45,6 @@ public class ZipPackageService {
             "blink-backend"
     );
 
-    private static final Set<String> SKIP_DIR_NAMES = Set.of(
-            ".git",
-            ".idea",
-            "node_modules",
-            "target",
-            "dist",
-            "__pycache__",
-            ".venv",
-            ".venv-ai-sdlc",
-            ".pytest_cache",
-            ".mypy_cache",
-            "runtime-data",
-            "blink_demo",
-            "blink_backend",
-            "blink-backend"
-    );
-
     private final BlinkProperties properties;
 
     public ZipPackageService(BlinkProperties properties) {
@@ -67,9 +54,22 @@ public class ZipPackageService {
     public record RepoFolder(String name, String purpose, String description) {
     }
 
-    public record PackageRequest(String workspaceRoot, String requirementMarkdown, List<RepoFolder> repositories) {
+    public record OverlayFile(String path, String content) {
+    }
+
+    public record PackageRequest(
+            String workspaceRoot,
+            String requirementMarkdown,
+            List<RepoFolder> repositories,
+            List<OverlayFile> overlayFiles
+    ) {
         public PackageRequest {
             repositories = repositories == null ? List.of() : List.copyOf(repositories);
+            overlayFiles = overlayFiles == null ? List.of() : List.copyOf(overlayFiles);
+        }
+
+        public PackageRequest(String workspaceRoot, String requirementMarkdown, List<RepoFolder> repositories) {
+            this(workspaceRoot, requirementMarkdown, repositories, List.of());
         }
     }
 
@@ -94,7 +94,10 @@ public class ZipPackageService {
     }
 
     public WorkspaceBundle packageWorkspace(PackageRequest request) throws IOException {
+        long started = System.currentTimeMillis();
         String root = workspaceRootName(request.workspaceRoot());
+        Path sdlc = resolveAutomationSdlc();
+        log.info("Zip start root={} automationSdlc={}", root, sdlc);
         List<WorkspaceEntry> structure = new ArrayList<>();
         AtomicInteger files = new AtomicInteger();
         ByteArrayOutputStream buffer = new ByteArrayOutputStream();
@@ -109,7 +112,6 @@ public class ZipPackageService {
             files.incrementAndGet();
             structure.add(new WorkspaceEntry("requirement.md", "file"));
 
-            Path sdlc = resolveAutomationSdlc();
             if (sdlc != null) {
                 copySharedFolder(
                         zip,
@@ -131,17 +133,26 @@ public class ZipPackageService {
             }
 
             addCursorOverlay(zip, root, files, structure);
+            addAgentOverlay(zip, root, request.overlayFiles(), files, structure);
             addConfiguredRepos(zip, root, request.repositories(), files, structure);
         }
-        return new WorkspaceBundle(buffer.toByteArray(), root + ".zip", List.copyOf(structure), files.get());
+        WorkspaceBundle bundle = new WorkspaceBundle(buffer.toByteArray(), root + ".zip", List.copyOf(structure), files.get());
+        log.info(
+                "Zip ready root={} files={} bytes={} ms={}",
+                root,
+                bundle.fileCount(),
+                bundle.zipBytes().length,
+                System.currentTimeMillis() - started
+        );
+        return bundle;
     }
 
     public static String workspaceRootName(String projectName) {
-        String slug = slugify(projectName);
-        if (slug.isBlank()) {
-            slug = "project";
-        }
-        return slug.endsWith("-workspace") ? slug : slug + "-workspace";
+        return WorkspaceNames.folder(projectName);
+    }
+
+    public static String workspaceRootName(String projectName, Long projectId) {
+        return WorkspaceNames.folder(projectName, projectId);
     }
 
     public static String encodeStructure(List<WorkspaceEntry> structure) {
@@ -165,6 +176,39 @@ public class ZipPackageService {
             files.incrementAndGet();
         }
         structure.add(new WorkspaceEntry(".cursor", "directory"));
+    }
+
+    private void addAgentOverlay(
+            ZipOutputStream zip,
+            String root,
+            List<OverlayFile> overlayFiles,
+            AtomicInteger files,
+            List<WorkspaceEntry> structure
+    ) throws IOException {
+        boolean added = false;
+        for (OverlayFile file : overlayFiles) {
+            String relative = sanitizeOverlayPath(file.path());
+            if (relative == null) {
+                continue;
+            }
+            putText(zip, zipPath(root, relative), file.content() == null ? "" : file.content());
+            files.incrementAndGet();
+            added = true;
+        }
+        if (added) {
+            structure.add(new WorkspaceEntry(".cursor/ai-sdlc", "directory"));
+        }
+    }
+
+    static String sanitizeOverlayPath(String path) {
+        if (path == null || path.isBlank()) {
+            return null;
+        }
+        String normalized = path.replace('\\', '/').replaceFirst("^/+", "");
+        if (normalized.contains("..") || !normalized.startsWith(".cursor/ai-sdlc/") || normalized.endsWith("/")) {
+            return null;
+        }
+        return normalized;
     }
 
     private void addConfiguredRepos(
@@ -283,7 +327,8 @@ public class ZipPackageService {
                     return FileVisitResult.CONTINUE;
                 }
                 String name = dir.getFileName().toString();
-                if (SKIP_DIR_NAMES.contains(name) || extraSkipDirs.contains(name)) {
+                String parent = dir.getParent() == null ? null : dir.getParent().getFileName().toString();
+                if (FrameworkKitFilter.skipDirectory(name, parent) || extraSkipDirs.contains(name)) {
                     return FileVisitResult.SKIP_SUBTREE;
                 }
                 return FileVisitResult.CONTINUE;
@@ -356,66 +401,26 @@ public class ZipPackageService {
         if (parts.length > 0 && skipTopLevel.contains(parts[0])) {
             return true;
         }
-        for (String part : parts) {
-            if (SKIP_DIR_NAMES.contains(part)) {
+        for (int i = 0; i < parts.length; i++) {
+            String part = parts[i];
+            boolean last = i == parts.length - 1;
+            String parent = i == 0 ? null : parts[i - 1];
+            if (!last && FrameworkKitFilter.skipDirectory(part, parent)) {
+                return true;
+            }
+            if (last && skipFile(part)) {
                 return true;
             }
         }
-        return skipFile(Path.of(relative).getFileName().toString());
+        return false;
     }
 
     Path resolveAutomationSdlc() {
-        Path configured = Path.of(properties.getAutomationSdlcPath());
-        if (!configured.isAbsolute()) {
-            configured = Path.of(System.getProperty("user.dir")).resolve(configured);
-        }
-        configured = configured.normalize();
-        if (isUsableSdlc(configured)) {
-            return configured;
-        }
-        Path walked = walkForDirectory("automation_sdlc");
-        if (isUsableSdlc(walked)) {
-            return walked;
-        }
-        return null;
-    }
-
-    private static boolean isUsableSdlc(Path dir) {
-        if (dir == null || !Files.isDirectory(dir)) {
-            return false;
-        }
-        if (Files.isRegularFile(dir.resolve("Makefile"))
-                || Files.isRegularFile(dir.resolve("README.md"))
-                || Files.isDirectory(dir.resolve("ai-sdlc"))) {
-            return true;
-        }
-        try (var children = Files.list(dir)) {
-            return children.findAny().isPresent();
-        } catch (IOException ignored) {
-            return false;
-        }
-    }
-
-    private static Path walkForDirectory(String name) {
-        Path dir = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
-        while (dir != null) {
-            Path candidate = dir.resolve(name);
-            if (Files.isDirectory(candidate)) {
-                return candidate;
-            }
-            dir = dir.getParent();
-        }
-        return null;
+        return FrameworkKitPaths.resolve(properties.getAutomationSdlcPath());
     }
 
     private static boolean skipFile(String name) {
-        if (name.equals(".DS_Store") || name.endsWith(".pyc") || name.endsWith(".log")) {
-            return true;
-        }
-        if (name.equals(".env") || (name.startsWith(".env.") && !name.contains("example"))) {
-            return true;
-        }
-        return false;
+        return FrameworkKitFilter.skipFile(name);
     }
 
     static void putText(ZipOutputStream zip, String name, String content) throws IOException {

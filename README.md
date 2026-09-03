@@ -5,35 +5,56 @@ Java 25 / Spring Boot 4.1.0 API for the `blink_demo` wizard. It persists the fir
 ## What the 3 screens do
 
 1. **Welcome** — user picks New or Existing. That value is sent with the project on the next screen.
-2. **Project & Stakeholders** — **Save & Continue** `POST`/`PUT`s:
-   - `project` (`project_name`, generated `project_code`, `description`, `status`, `project_type`, audit columns)
-   - `stakeholder` rows (name, email, `role_id` → `stakeholder_roles`)
-3. **Requirements** — **Download Project** returns a zip containing:
-   - `automation_sdlc/`
-   - generated Spring Boot 4.1.0 Maven project
-   - `requirement.md`
+2. **Project & Stakeholders** — **Save & Continue** `POST`/`PUT`s the project and, when S3 is configured, creates `<slug>_<id>_workspace/` in the bucket and copies the AI-SDLC kit into it.
+3. **Download Project** — runs `setup-new-workspace` apply, writes `requirement.md` and `.cursor/` into the same S3 workspace, then zips the kit **from local disk** (does not wait for the full S3 copy).
 
 ## Run locally
 
-JDK 25 and Maven 3.9+ are required. Copy `.env.example` to `.env` in this folder and put your Render **External** Database URL in `DATABASE_URL`. `.env` is gitignored.
+JDK 25 is required. This repo includes the Maven Wrapper, so you do not need a global `mvn` install.
+
+**Local without a database:** set `SPRING_PROFILES_ACTIVE=nodb` in `.env`. Projects are saved to `.blink-nodb.json` in this folder (gitignored) so they survive a Java restart. Grooming and download still work.
+
+**Production / Render must not set `SPRING_PROFILES_ACTIVE=nodb`.** Use Postgres (`DATABASE_URL`). Always set `BLINK_AGENT_RUNTIME_TOKEN` to the Worker `AGENT_SERVICE_TOKEN`. `.env` is gitignored.
 
 ```powershell
 Copy-Item .env.example .env
-# edit .env and set DATABASE_URL=postgres://...
-mvn spring-boot:run
+# edit .env: BLINK_AGENT_RUNTIME_TOKEN (and keep SPRING_PROFILES_ACTIVE=nodb)
+# S3 keys are optional locally; without them Save still works, S3 copy is skipped
+$env:JAVA_HOME = "$env:USERPROFILE\tools\jdk-25"
+.\mvnw.cmd spring-boot:run
 ```
 
-The API listens on `http://localhost:8090`. Vite in `blink_demo` already proxies `/api` there.
+The API listens on `http://localhost:8090`. Vite proxies `/api` to that local port.
 
-Then in another terminal:
+In another terminal, from the **frontend** repo (`Development/Blink-Frontend/blink_demo`):
 
 ```powershell
-cd ..\blink_demo
 npm install
 npm run dev
 ```
 
-Open `http://localhost:5173`.
+Open `http://127.0.0.1:5173`. `.env.development` already sets `VITE_API_URL=/api` so the wizard talks to local Java, not Render.
+
+### Local Worker (optional)
+
+The default `.env` points at the deployed Cloudflare Worker. To run grooming from the code on this machine:
+
+```powershell
+cd ..\..\Blink-Framework\automation_sdlc\services\agent-runtime
+Copy-Item .dev.vars.example .dev.vars
+# set LLM_API_KEY in .dev.vars
+npm install
+npm run dev
+```
+
+Then in `blink-backend/.env`:
+
+```
+BLINK_AGENT_RUNTIME_URL=http://127.0.0.1:8787
+BLINK_AGENT_RUNTIME_TOKEN=local-dev-token
+```
+
+Restart Java after changing `.env`.
 
 ## Deploy on Render
 
@@ -53,9 +74,15 @@ The GitHub repo `blink-backend` already *is* the API. The `Dockerfile` sits at t
 
 | Key | Value |
 | --- | --- |
-| `DATABASE_URL` | **Required.** Link the existing Postgres service, or paste the **Internal** Database URL. Without this the API tries `localhost` and Hibernate fails. |
+| `DATABASE_URL` | **Required.** Link the existing Postgres service, or paste the **Internal** Database URL. Without this the API tries `localhost` and Hibernate fails. **Do not set `SPRING_PROFILES_ACTIVE=nodb` here.** |
+| `BLINK_AGENT_RUNTIME_URL` | `https://blink-agent-runtime.rushikesh-kate.workers.dev` |
+| `BLINK_AGENT_RUNTIME_TOKEN` | Same value as the Worker `AGENT_SERVICE_TOKEN` secret. Required for grooming and zip overlay. |
+| `BLINK_AUTOMATION_SDLC_GIT_URL` | `https://github.com/AtulTalentServ/automation_sdlc.git` (Docker image includes git so the kit can be cloned when `/app/automation_sdlc` is empty) |
 | `BLINK_CORS_ORIGINS` | `https://YOUR-FRONTEND.onrender.com` (add after the static site exists; you can also keep `http://localhost:5173`) |
-| `JAVA_OPTS` | `-XX:MaxRAMPercentage=75.0` |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | **Required for S3 workspaces.** Save & Continue copies the kit to `<slug>_<id>_workspace/`. |
+| `AWS_REGION` | `us-west-2` |
+| `S3_BUCKET_NAME` | `blink-ai-dev` |
+| `S3_PUBLIC_BASE_URL` | `https://blink-ai-dev.s3-us-west-2.amazonaws.com/` |
 
 Render sets `PORT` for you. After deploy, note the URL, e.g. `https://blink-backend-xxxx.onrender.com`.
 
@@ -121,7 +148,9 @@ Set `SPRING_JPA_DDL_AUTO=none` after the schema is stable if you do not want Hib
 | POST | `/api/projects` | Save & Continue (first time) |
 | PUT | `/api/projects/{id}` | Save & Continue (after going back) |
 | GET | `/api/projects/{id}` | Reload |
-| POST | `/api/projects/{id}/download` | Download Project (`multipart`: `file`, `requirementsText`) |
+| POST | `/api/projects/{id}/download` | Download the S3 workspace zip (`<name>_workspace.zip`). Runs setup apply, writes `.cursor/`, then zips the bucket prefix. |
+| POST | `/api/grooming/clarify` | Hosted `/clarify-requirement` discovery |
+| POST | `/api/projects/{id}/setup` | Hosted `/setup-new-workspace` apply |
 | GET | `/actuator/health` | Health |
 
 ## Table mapping

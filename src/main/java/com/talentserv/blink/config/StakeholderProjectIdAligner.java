@@ -13,9 +13,11 @@ import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
+import org.springframework.context.annotation.Profile;
 
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE)
+@Profile("!nodb")
 @ConditionalOnProperty(name = "spring.jpa.hibernate.ddl-auto", havingValue = "none", matchIfMissing = true)
 public class StakeholderProjectIdAligner implements ApplicationRunner {
 
