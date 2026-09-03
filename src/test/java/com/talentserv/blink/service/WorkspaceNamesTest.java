@@ -15,10 +15,15 @@ class WorkspaceNamesTest {
     void folderUsesUnderscoreWorkspaceSuffix() {
         assertThat(WorkspaceNames.folder("Food Delivery")).isEqualTo("food_delivery_workspace");
         assertThat(WorkspaceNames.folder("food_delivery_workspace")).isEqualTo("food_delivery_workspace");
+        assertThat(WorkspaceNames.folder("Food Delivery", 6L)).isEqualTo("food_delivery_6_workspace");
         assertThat(WorkspaceNames.key("Food Delivery", ".cursor/ai-sdlc/workspace-context.md"))
                 .isEqualTo("food_delivery_workspace/.cursor/ai-sdlc/workspace-context.md");
+        assertThat(WorkspaceNames.key("Food Delivery", 6L, "requirement.md"))
+                .isEqualTo("food_delivery_6_workspace/requirement.md");
         assertThat(WorkspaceNames.publicUrl("https://blink-ai-dev.s3-us-west-2.amazonaws.com/", "Food Delivery"))
                 .isEqualTo("https://blink-ai-dev.s3-us-west-2.amazonaws.com/food_delivery_workspace/");
+        assertThat(WorkspaceNames.publicUrl("https://blink-ai-dev.s3-us-west-2.amazonaws.com/", "Food Delivery", 6L))
+                .isEqualTo("https://blink-ai-dev.s3-us-west-2.amazonaws.com/food_delivery_6_workspace/");
     }
 
     @Test

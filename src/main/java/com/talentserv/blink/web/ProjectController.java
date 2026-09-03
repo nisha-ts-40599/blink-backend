@@ -75,13 +75,19 @@ public class ProjectController {
     }
 
     @GetMapping("/workspace-tree")
-    public WorkspaceInventoryResponse workspaceTree(@RequestParam String projectName) {
-        return s3WorkspaceService.inspect(projectName);
+    public WorkspaceInventoryResponse workspaceTree(
+            @RequestParam String projectName,
+            @RequestParam(required = false) Long projectId
+    ) {
+        return s3WorkspaceService.inspect(projectName, projectId);
     }
 
     @GetMapping("/workspace-status")
-    public WorkspaceStatusResponse workspaceStatus(@RequestParam String projectName) {
-        WorkspaceStatusResponse progress = s3WorkspaceService.progress(projectName);
+    public WorkspaceStatusResponse workspaceStatus(
+            @RequestParam String projectName,
+            @RequestParam(required = false) Long projectId
+    ) {
+        WorkspaceStatusResponse progress = s3WorkspaceService.progress(projectName, projectId);
         if (progress == null) {
             return new WorkspaceStatusResponse(null, null, 0, 0, 0, false);
         }
@@ -106,7 +112,7 @@ public class ProjectController {
     @GetMapping("/{id}/workspace")
     public WorkspaceInventoryResponse workspace(@PathVariable Long id) {
         Project project = projectService.requireProject(id);
-        return s3WorkspaceService.inspect(project.getProjectName());
+        return s3WorkspaceService.inspect(project.getProjectName(), id);
     }
 
     @PostMapping("/{id}/setup")
@@ -114,8 +120,16 @@ public class ProjectController {
         SetupAgentResponse response = setupAgentService.start(id, request);
         if (s3WorkspaceService.enabled()) {
             Project project = projectService.requireProject(id);
-            s3WorkspaceService.provision(project.getProjectName());
-            s3WorkspaceService.putCursorOverlay(project.getProjectName(), SetupAgentService.overlayFilesFromResponse(response));
+            s3WorkspaceService.provisionAsync(project.getProjectName(), id);
+            try {
+                s3WorkspaceService.putCursorOverlay(
+                        project.getProjectName(),
+                        id,
+                        SetupAgentService.overlayFilesFromResponse(response)
+                );
+            } catch (Exception ex) {
+                log.warn("S3 overlay write failed during setup: {}", ex.toString());
+            }
         }
         return response;
     }
@@ -145,15 +159,19 @@ public class ProjectController {
         ZipPackageService.WorkspaceBundle bundle;
         if (s3WorkspaceService.enabled()) {
             log.info("Download writing requirement and .cursor overlay to S3 without waiting for template copy");
-            s3WorkspaceService.provisionAsync(project.getProjectName());
-            s3WorkspaceService.putRequirement(project.getProjectName(), markdown);
-            s3WorkspaceService.putCursorOverlay(project.getProjectName(), overlay);
-            log.info("Download S3 overlay written elapsedMs={}", System.currentTimeMillis() - started);
+            s3WorkspaceService.provisionAsync(project.getProjectName(), id);
+            try {
+                s3WorkspaceService.putRequirement(project.getProjectName(), id, markdown);
+                s3WorkspaceService.putCursorOverlay(project.getProjectName(), id, overlay);
+                log.info("Download S3 overlay written elapsedMs={}", System.currentTimeMillis() - started);
+            } catch (Exception ex) {
+                log.warn("Download S3 overlay failed, continuing with local zip: {}", ex.toString());
+            }
         }
         log.info("Download packaging zip from local automation_sdlc");
         bundle = zipPackageService.packageWorkspace(
                 new ZipPackageService.PackageRequest(
-                        ZipPackageService.workspaceRootName(project.getProjectName()),
+                        ZipPackageService.workspaceRootName(project.getProjectName(), id),
                         markdown,
                         toRepoFolders(repoNames, repoPurposes, repoDescriptions),
                         overlay
@@ -170,7 +188,7 @@ public class ProjectController {
             nextCommand = "/" + nextCommand;
         }
         ContentDisposition disposition = ContentDisposition.attachment().filename(bundle.filename()).build();
-        String folderStatus = s3WorkspaceService.enabled() ? s3WorkspaceService.status(project.getProjectName()) : "";
+        String folderStatus = s3WorkspaceService.enabled() ? s3WorkspaceService.status(project.getProjectName(), id) : "";
         return ResponseEntity.ok()
                 .header(HttpHeaders.CONTENT_DISPOSITION, disposition.toString())
                 .header("X-Blink-Workspace-Structure", ZipPackageService.encodeStructure(bundle.structure()))
@@ -210,14 +228,14 @@ public class ProjectController {
         if (project == null || project.projectName() == null || project.projectName().isBlank()) {
             return project;
         }
-        String key = WorkspaceNames.folder(project.projectName());
-        String url = WorkspaceNames.publicUrl(properties.getS3PublicBaseUrl(), project.projectName());
+        String key = WorkspaceNames.folder(project.projectName(), project.id());
+        String url = WorkspaceNames.publicUrl(properties.getS3PublicBaseUrl(), project.projectName(), project.id());
         if (provision && s3WorkspaceService.enabled()) {
-            s3WorkspaceService.provisionAsync(project.projectName());
+            s3WorkspaceService.provisionAsync(project.projectName(), project.id());
         }
         if (!s3WorkspaceService.enabled()) {
             return project.withWorkspace(null, null, null);
         }
-        return project.withWorkspace(key, url, s3WorkspaceService.status(project.projectName()));
+        return project.withWorkspace(key, url, s3WorkspaceService.status(project.projectName(), project.id()));
     }
 }

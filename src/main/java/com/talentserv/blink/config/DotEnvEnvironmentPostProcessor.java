@@ -47,7 +47,7 @@ public class DotEnvEnvironmentPostProcessor implements EnvironmentPostProcessor 
         }
     }
 
-    static Path resolveEnvFile() {
+    public static Path resolveEnvFile() {
         List<Path> candidates = List.of(
                 Path.of(System.getProperty("user.dir", "."), ".env"),
                 Path.of("blink-backend", ".env"));

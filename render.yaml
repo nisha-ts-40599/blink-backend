@@ -1,0 +1,30 @@
+# Render Blueprint. Secrets stay in the dashboard (sync: false).
+# Production must use Postgres — do not set SPRING_PROFILES_ACTIVE=nodb.
+
+services:
+  - type: web
+    name: blink-backend
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /actuator/health
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: BLINK_AGENT_RUNTIME_URL
+        value: https://blink-agent-runtime.rushikesh-kate.workers.dev
+      - key: BLINK_AGENT_RUNTIME_TOKEN
+        sync: false
+      - key: BLINK_AUTOMATION_SDLC_GIT_URL
+        value: https://github.com/AtulTalentServ/automation_sdlc.git
+      - key: BLINK_CORS_ORIGINS
+        sync: false
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: AWS_REGION
+        value: us-west-2
+      - key: S3_BUCKET_NAME
+        value: blink-ai-dev
+      - key: S3_PUBLIC_BASE_URL
+        value: https://blink-ai-dev.s3-us-west-2.amazonaws.com/

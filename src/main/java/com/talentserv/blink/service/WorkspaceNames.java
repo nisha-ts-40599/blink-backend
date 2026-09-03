@@ -8,18 +8,32 @@ public final class WorkspaceNames {
     }
 
     public static String folder(String projectName) {
+        return folder(projectName, null);
+    }
+
+    public static String folder(String projectName, Long projectId) {
         String slug = slug(projectName);
         if (slug.isBlank()) {
             slug = "project";
         }
         if (slug.endsWith("_workspace")) {
-            return slug;
+            slug = slug.substring(0, slug.length() - "_workspace".length()).replaceAll("_+$", "");
+            if (slug.isBlank()) {
+                slug = "project";
+            }
+        }
+        if (projectId != null && projectId > 0) {
+            return slug + "_" + projectId + "_workspace";
         }
         return slug + "_workspace";
     }
 
     public static String key(String projectName, String relative) {
-        String folder = folder(projectName);
+        return key(projectName, null, relative);
+    }
+
+    public static String key(String projectName, Long projectId, String relative) {
+        String folder = folder(projectName, projectId);
         if (relative == null || relative.isBlank()) {
             return folder + "/";
         }
@@ -31,7 +45,11 @@ public final class WorkspaceNames {
     }
 
     public static String publicUrl(String baseUrl, String projectName) {
-        String folder = folder(projectName);
+        return publicUrl(baseUrl, projectName, null);
+    }
+
+    public static String publicUrl(String baseUrl, String projectName, Long projectId) {
+        String folder = folder(projectName, projectId);
         if (baseUrl == null || baseUrl.isBlank()) {
             return folder;
         }

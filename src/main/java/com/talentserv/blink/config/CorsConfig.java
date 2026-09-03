@@ -35,7 +35,8 @@ public class CorsConfig {
                                 "X-Blink-Next-Command",
                                 "X-Blink-Setup-Status",
                                 "X-Blink-Identity-Source",
-                                "X-Blink-Overlay-Count"
+                                "X-Blink-Overlay-Count",
+                                "X-Blink-Folder-Status"
                         )
                         .maxAge(3600);
             }

@@ -151,6 +151,10 @@ public class ZipPackageService {
         return WorkspaceNames.folder(projectName);
     }
 
+    public static String workspaceRootName(String projectName, Long projectId) {
+        return WorkspaceNames.folder(projectName, projectId);
+    }
+
     public static String encodeStructure(List<WorkspaceEntry> structure) {
         return structure.stream()
                 .map(entry -> entry.name() + ":" + entry.kind())
@@ -323,7 +327,8 @@ public class ZipPackageService {
                     return FileVisitResult.CONTINUE;
                 }
                 String name = dir.getFileName().toString();
-                if (FrameworkKitFilter.skipDirectory(name) || extraSkipDirs.contains(name)) {
+                String parent = dir.getParent() == null ? null : dir.getParent().getFileName().toString();
+                if (FrameworkKitFilter.skipDirectory(name, parent) || extraSkipDirs.contains(name)) {
                     return FileVisitResult.SKIP_SUBTREE;
                 }
                 return FileVisitResult.CONTINUE;
@@ -396,56 +401,22 @@ public class ZipPackageService {
         if (parts.length > 0 && skipTopLevel.contains(parts[0])) {
             return true;
         }
-        for (String part : parts) {
-            if (FrameworkKitFilter.skipDirectory(part)) {
+        for (int i = 0; i < parts.length; i++) {
+            String part = parts[i];
+            boolean last = i == parts.length - 1;
+            String parent = i == 0 ? null : parts[i - 1];
+            if (!last && FrameworkKitFilter.skipDirectory(part, parent)) {
+                return true;
+            }
+            if (last && skipFile(part)) {
                 return true;
             }
         }
-        return skipFile(Path.of(relative).getFileName().toString());
+        return false;
     }
 
     Path resolveAutomationSdlc() {
-        Path configured = Path.of(properties.getAutomationSdlcPath());
-        if (!configured.isAbsolute()) {
-            configured = Path.of(System.getProperty("user.dir")).resolve(configured);
-        }
-        configured = configured.normalize();
-        if (isUsableSdlc(configured)) {
-            return configured;
-        }
-        Path walked = walkForDirectory("automation_sdlc");
-        if (isUsableSdlc(walked)) {
-            return walked;
-        }
-        return null;
-    }
-
-    private static boolean isUsableSdlc(Path dir) {
-        if (dir == null || !Files.isDirectory(dir)) {
-            return false;
-        }
-        if (Files.isRegularFile(dir.resolve("Makefile"))
-                || Files.isRegularFile(dir.resolve("README.md"))
-                || Files.isDirectory(dir.resolve("ai-sdlc"))) {
-            return true;
-        }
-        try (var children = Files.list(dir)) {
-            return children.findAny().isPresent();
-        } catch (IOException ignored) {
-            return false;
-        }
-    }
-
-    private static Path walkForDirectory(String name) {
-        Path dir = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
-        while (dir != null) {
-            Path candidate = dir.resolve(name);
-            if (Files.isDirectory(candidate)) {
-                return candidate;
-            }
-            dir = dir.getParent();
-        }
-        return null;
+        return FrameworkKitPaths.resolve(properties.getAutomationSdlcPath());
     }
 
     private static boolean skipFile(String name) {

@@ -12,7 +12,6 @@ final class FrameworkKitFilter {
 
     static final Set<String> SKIP_DIR_NAMES = Set.of(
             ".git",
-            ".cursor",
             ".idea",
             ".vscode",
             ".tools",
@@ -44,7 +43,20 @@ final class FrameworkKitFilter {
     }
 
     static boolean skipDirectory(String name) {
-        return name != null && (SKIP_DIR_NAMES.contains(name) || name.startsWith("test_"));
+        return skipDirectory(name, null);
+    }
+
+    static boolean skipDirectory(String name, String parentName) {
+        if (name == null) {
+            return true;
+        }
+        if (name.startsWith("test_")) {
+            return true;
+        }
+        if (".cursor".equals(parentName)) {
+            return !"commands".equals(name);
+        }
+        return SKIP_DIR_NAMES.contains(name);
     }
 
     static boolean skipFile(String name) {

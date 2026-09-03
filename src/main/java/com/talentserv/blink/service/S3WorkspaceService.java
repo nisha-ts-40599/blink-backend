@@ -23,6 +23,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.zip.ZipEntry;
@@ -54,15 +55,18 @@ import software.amazon.awssdk.services.s3.model.S3Object;
 public class S3WorkspaceService {
 
     private static final Logger log = LoggerFactory.getLogger(S3WorkspaceService.class);
+    private static final String KIT_COMPLETE = "automation_sdlc/.blink-kit-complete";
 
     private final BlinkProperties properties;
+    private final ZipPackageService zipPackageService;
     private final ExecutorService uploads = Executors.newFixedThreadPool(16);
     private final ExecutorService provisioner = Executors.newFixedThreadPool(2);
     private final ConcurrentHashMap<String, ProvisionJob> jobs = new ConcurrentHashMap<>();
     private volatile S3Client client;
 
-    public S3WorkspaceService(BlinkProperties properties) {
+    public S3WorkspaceService(BlinkProperties properties, ZipPackageService zipPackageService) {
         this.properties = properties;
+        this.zipPackageService = zipPackageService;
     }
 
     @PreDestroy
@@ -81,33 +85,49 @@ public class S3WorkspaceService {
 
     /** Start copying the template without blocking the HTTP request. */
     public void provisionAsync(String projectName) {
+        provisionAsync(projectName, null);
+    }
+
+    public void provisionAsync(String projectName, Long projectId) {
         if (!enabled() || projectName == null || projectName.isBlank()) {
             return;
         }
-        ensureStarted(projectName, false);
+        ensureStarted(projectName, projectId, true);
     }
 
-    /** Block until the template copy finishes. Used by download. */
+    /** Block until the template copy finishes. */
     public String provision(String projectName) {
+        return provision(projectName, null);
+    }
+
+    public String provision(String projectName, Long projectId) {
         requireEnabled();
-        ProvisionJob job = ensureStarted(projectName, true);
+        ProvisionJob job = ensureStarted(projectName, projectId, true);
         await(job);
         if (job.status.get() == WorkspaceStatus.FAILED) {
             throw new ApiException(HttpStatus.BAD_GATEWAY, "Could not create the S3 workspace.");
         }
-        return WorkspaceNames.folder(projectName);
+        return WorkspaceNames.folder(projectName, projectId);
     }
 
     public String status(String projectName) {
-        WorkspaceStatusResponse progress = progress(projectName);
+        return status(projectName, null);
+    }
+
+    public String status(String projectName, Long projectId) {
+        WorkspaceStatusResponse progress = progress(projectName, projectId);
         return progress == null ? null : progress.status();
     }
 
     public WorkspaceStatusResponse progress(String projectName) {
+        return progress(projectName, null);
+    }
+
+    public WorkspaceStatusResponse progress(String projectName, Long projectId) {
         if (!enabled() || projectName == null || projectName.isBlank()) {
             return null;
         }
-        String folder = WorkspaceNames.folder(projectName);
+        String folder = WorkspaceNames.folder(projectName, projectId);
         ProvisionJob job = jobs.get(folder);
         if (job != null) {
             WorkspaceStatus state = job.status.get();
@@ -119,10 +139,10 @@ public class S3WorkspaceService {
                     copied,
                     total,
                     percent(state, copied, total),
-                    state != WorkspaceStatus.FAILED
+                    state == WorkspaceStatus.READY
             );
         }
-        boolean exists = hasPrefix(WorkspaceNames.key(projectName, "automation_sdlc/"));
+        boolean exists = hasObject(WorkspaceNames.key(projectName, projectId, KIT_COMPLETE));
         return new WorkspaceStatusResponse(folder, exists ? "ready" : null, exists ? 1 : 0, exists ? 1 : 0, exists ? 100 : 0, exists);
     }
 
@@ -137,8 +157,12 @@ public class S3WorkspaceService {
     }
 
     public WorkspaceInventoryResponse inspect(String projectName) {
+        return inspect(projectName, null);
+    }
+
+    public WorkspaceInventoryResponse inspect(String projectName, Long projectId) {
         requireEnabled();
-        String folder = WorkspaceNames.folder(projectName);
+        String folder = WorkspaceNames.folder(projectName, projectId);
         String prefix = folder + "/";
         log.info("S3 inspect listing objects prefix={}", prefix);
         List<ListedObject> objects = new ArrayList<>();
@@ -161,8 +185,8 @@ public class S3WorkspaceService {
         return summarize(
                 properties.getS3BucketName().trim(),
                 folder,
-                WorkspaceNames.publicUrl(properties.getS3PublicBaseUrl(), projectName),
-                status(projectName),
+                WorkspaceNames.publicUrl(properties.getS3PublicBaseUrl(), projectName, projectId),
+                status(projectName, projectId),
                 objects
         );
     }
@@ -220,8 +244,8 @@ public class S3WorkspaceService {
         );
     }
 
-    private ProvisionJob ensureStarted(String projectName, boolean retryFailed) {
-        String folder = WorkspaceNames.folder(projectName);
+    private ProvisionJob ensureStarted(String projectName, Long projectId, boolean retryFailed) {
+        String folder = WorkspaceNames.folder(projectName, projectId);
         return jobs.compute(folder, (key, existing) -> {
             if (existing != null && existing.status.get() == WorkspaceStatus.PREPARING
                     && existing.future != null && !existing.future.isDone()) {
@@ -234,30 +258,52 @@ public class S3WorkspaceService {
                 return existing;
             }
             ProvisionJob job = new ProvisionJob();
-            job.future = provisioner.submit(() -> runProvision(projectName, job));
+            job.future = provisioner.submit(() -> runProvision(projectName, projectId, job));
             return job;
         });
     }
 
-    private void runProvision(String projectName, ProvisionJob job) {
-        String folder = WorkspaceNames.folder(projectName);
+    private void runProvision(String projectName, Long projectId, ProvisionJob job) {
+        String folder = WorkspaceNames.folder(projectName, projectId);
+        Path cloned = null;
         try {
-            putBytes(WorkspaceNames.key(projectName, ".blink-workspace.json"), workspaceManifest(projectName), "application/json");
-            if (hasPrefix(WorkspaceNames.key(projectName, "automation_sdlc/"))) {
-                log.info("S3 workspace already has automation_sdlc folder={}", folder);
+            putBytes(WorkspaceNames.key(projectName, projectId, ".blink-workspace.json"), workspaceManifest(projectName), "application/json");
+            if (hasObject(WorkspaceNames.key(projectName, projectId, KIT_COMPLETE))) {
+                log.info("S3 workspace kit already complete folder={}", folder);
                 job.filesTotal.set(1);
                 job.filesCopied.set(1);
                 job.status.set(WorkspaceStatus.READY);
                 return;
             }
-            Path source = resolveAutomationSdlc();
+            Path local = zipPackageService.resolveAutomationSdlc();
+            Path source = local;
+            if (local == null || !Files.isDirectory(local)) {
+                String gitUrl = properties.getAutomationSdlcGitUrl();
+                if (gitUrl == null || gitUrl.isBlank()) {
+                    throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "Could not clone or find automation_sdlc.");
+                }
+                cloned = cloneAutomationSdlc(gitUrl.trim());
+                source = cloned;
+            }
             log.info("S3 uploading automation_sdlc into folder={} from {}", folder, source);
-            uploadTree(source, WorkspaceNames.key(projectName, "automation_sdlc"), job.filesCopied, job.filesTotal);
+            uploadTree(source, WorkspaceNames.key(projectName, projectId, "automation_sdlc"), job);
+            putFrameworkCommands(source, projectName, projectId);
+            putBytes(
+                    WorkspaceNames.key(projectName, projectId, KIT_COMPLETE),
+                    "ok".getBytes(StandardCharsets.UTF_8),
+                    "text/plain"
+            );
             log.info("Provisioned S3 workspace folder={} files from {}", folder, source);
+            if (job.cancelled.get()) {
+                job.status.set(WorkspaceStatus.FAILED);
+                return;
+            }
             job.status.set(WorkspaceStatus.READY);
         } catch (Exception ex) {
             job.status.set(WorkspaceStatus.FAILED);
             log.warn("S3 workspace provision failed: {}", ex.toString());
+        } finally {
+            deleteTemp(cloned);
         }
     }
 
@@ -291,16 +337,25 @@ public class S3WorkspaceService {
         private final AtomicReference<WorkspaceStatus> status = new AtomicReference<>(WorkspaceStatus.PREPARING);
         private final AtomicInteger filesCopied = new AtomicInteger();
         private final AtomicInteger filesTotal = new AtomicInteger();
+        private final AtomicBoolean cancelled = new AtomicBoolean();
         private volatile Future<?> future;
     }
 
     public void putRequirement(String projectName, String markdown) {
+        putRequirement(projectName, null, markdown);
+    }
+
+    public void putRequirement(String projectName, Long projectId, String markdown) {
         requireEnabled();
         String body = markdown == null || markdown.isBlank() ? "# requirement\n" : markdown;
-        putBytes(WorkspaceNames.key(projectName, "requirement.md"), body.getBytes(StandardCharsets.UTF_8), "text/markdown");
+        putBytes(WorkspaceNames.key(projectName, projectId, "requirement.md"), body.getBytes(StandardCharsets.UTF_8), "text/markdown");
     }
 
     public void putCursorOverlay(String projectName, List<ZipPackageService.OverlayFile> overlayFiles) {
+        putCursorOverlay(projectName, null, overlayFiles);
+    }
+
+    public void putCursorOverlay(String projectName, Long projectId, List<ZipPackageService.OverlayFile> overlayFiles) {
         requireEnabled();
         boolean wrote = false;
         if (overlayFiles != null) {
@@ -311,7 +366,7 @@ public class S3WorkspaceService {
                 }
                 String content = file.content() == null ? "" : file.content();
                 putBytes(
-                        WorkspaceNames.key(projectName, relative),
+                        WorkspaceNames.key(projectName, projectId, relative),
                         content.getBytes(StandardCharsets.UTF_8),
                         "text/plain"
                 );
@@ -319,7 +374,7 @@ public class S3WorkspaceService {
             }
         }
         if (!wrote) {
-            putBytes(WorkspaceNames.key(projectName, ".cursor/.keep"), new byte[0], "application/octet-stream");
+            putBytes(WorkspaceNames.key(projectName, projectId, ".cursor/.keep"), new byte[0], "application/octet-stream");
         }
     }
 
@@ -372,20 +427,6 @@ public class S3WorkspaceService {
         return new ZipPackageService.WorkspaceBundle(buffer.toByteArray(), folder + ".zip", List.copyOf(structure), files.get());
     }
 
-    private Path resolveAutomationSdlc() throws IOException, InterruptedException {
-        Path local = Path.of(properties.getAutomationSdlcPath() == null ? "" : properties.getAutomationSdlcPath())
-                .toAbsolutePath()
-                .normalize();
-        if (Files.isDirectory(local)) {
-            return local;
-        }
-        String gitUrl = properties.getAutomationSdlcGitUrl();
-        if (gitUrl != null && !gitUrl.isBlank()) {
-            return cloneAutomationSdlc(gitUrl.trim());
-        }
-        throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "Could not clone or find automation_sdlc.");
-    }
-
     private Path cloneAutomationSdlc(String gitUrl) throws IOException, InterruptedException {
         Path temp = Files.createTempDirectory("blink-automation-sdlc-");
         Process process = new ProcessBuilder("git", "clone", "--depth", "1", gitUrl, temp.toString())
@@ -399,16 +440,57 @@ public class S3WorkspaceService {
         }
         if (process.exitValue() != 0) {
             log.warn("git clone failed: {}", output);
+            deleteTemp(temp);
             throw new ApiException(HttpStatus.BAD_GATEWAY, "Could not clone automation_sdlc.");
         }
         return temp;
     }
 
-    private void uploadTree(Path root, String keyPrefix) throws Exception {
-        uploadTree(root, keyPrefix, null, null);
+    private void putFrameworkCommands(Path source, String projectName, Long projectId) throws IOException {
+        Path commands = source.resolve(".cursor").resolve("commands");
+        if (!Files.isDirectory(commands)) {
+            return;
+        }
+        Files.walkFileTree(commands, new SimpleFileVisitor<>() {
+            @Override
+            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+                String relative = commands.relativize(file).toString().replace('\\', '/');
+                putBytes(
+                        WorkspaceNames.key(projectName, projectId, ".cursor/commands/" + relative),
+                        Files.readAllBytes(file),
+                        "text/plain"
+                );
+                return FileVisitResult.CONTINUE;
+            }
+        });
     }
 
-    private void uploadTree(Path root, String keyPrefix, AtomicInteger copied, AtomicInteger total) throws Exception {
+    private static void deleteTemp(Path dir) {
+        if (dir == null || !Files.exists(dir)) {
+            return;
+        }
+        try {
+            Files.walkFileTree(dir, new SimpleFileVisitor<>() {
+                @Override
+                public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+                    Files.deleteIfExists(file);
+                    return FileVisitResult.CONTINUE;
+                }
+
+                @Override
+                public FileVisitResult postVisitDirectory(Path folder, IOException exc) throws IOException {
+                    Files.deleteIfExists(folder);
+                    return FileVisitResult.CONTINUE;
+                }
+            });
+        } catch (IOException ignored) {
+            log.warn("Could not delete temp kit copy {}", dir);
+        }
+    }
+
+    private void uploadTree(Path root, String keyPrefix, ProvisionJob job) throws Exception {
+        AtomicInteger copied = job.filesCopied;
+        AtomicInteger total = job.filesTotal;
         List<Callable<Void>> tasks = new ArrayList<>();
         LinkedHashSet<String> skippedDirs = new LinkedHashSet<>();
         Files.walkFileTree(root, new SimpleFileVisitor<>() {
@@ -418,7 +500,8 @@ public class S3WorkspaceService {
                     return FileVisitResult.CONTINUE;
                 }
                 String name = dir.getFileName().toString();
-                if (FrameworkKitFilter.skipDirectory(name)) {
+                String parent = dir.getParent() == null ? null : dir.getParent().getFileName().toString();
+                if (FrameworkKitFilter.skipDirectory(name, parent)) {
                     skippedDirs.add(name);
                     return FileVisitResult.SKIP_SUBTREE;
                 }
@@ -434,18 +517,17 @@ public class S3WorkspaceService {
                 String relative = root.relativize(file).toString().replace('\\', '/');
                 String key = keyPrefix + "/" + relative;
                 tasks.add(() -> {
-                    putBytes(key, Files.readAllBytes(file), contentType(name));
-                    if (copied != null) {
-                        copied.incrementAndGet();
+                    if (job.cancelled.get()) {
+                        return null;
                     }
+                    putBytes(key, Files.readAllBytes(file), contentType(name));
+                    copied.incrementAndGet();
                     return null;
                 });
                 return FileVisitResult.CONTINUE;
             }
         });
-        if (total != null) {
-            total.set(Math.max(tasks.size(), 1));
-        }
+        total.set(Math.max(tasks.size(), 1));
         log.info(
                 "S3 upload queued {} files prefix={} skippedDirs={}",
                 tasks.size(),
@@ -456,24 +538,38 @@ public class S3WorkspaceService {
         for (Callable<Void> task : tasks) {
             futures.add(uploads.submit(task));
         }
-        for (Future<Void> future : futures) {
-            future.get(3, TimeUnit.MINUTES);
+        try {
+            for (Future<Void> future : futures) {
+                if (job.cancelled.get()) {
+                    break;
+                }
+                future.get(3, TimeUnit.MINUTES);
+            }
+        } catch (TimeoutException | InterruptedException | ExecutionException ex) {
+            job.cancelled.set(true);
+            for (Future<Void> future : futures) {
+                future.cancel(true);
+            }
+            if (ex instanceof InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw interrupted;
+            }
+            throw ex;
         }
         if (tasks.isEmpty()) {
             putBytes(keyPrefix + "/README.md", "# automation_sdlc\n".getBytes(StandardCharsets.UTF_8), "text/markdown");
-            if (copied != null) {
-                copied.incrementAndGet();
-            }
+            copied.incrementAndGet();
         }
     }
 
-    private boolean hasPrefix(String prefix) {
+    private boolean hasObject(String key) {
         ListObjectsV2Request request = ListObjectsV2Request.builder()
                 .bucket(properties.getS3BucketName().trim())
-                .prefix(prefix)
+                .prefix(key)
                 .maxKeys(1)
                 .build();
-        return !client().listObjectsV2(request).contents().isEmpty();
+        return client().listObjectsV2(request).contents().stream()
+                .anyMatch(object -> key.equals(object.key()));
     }
 
     private Map<String, byte[]> listPrefix(String prefix) {

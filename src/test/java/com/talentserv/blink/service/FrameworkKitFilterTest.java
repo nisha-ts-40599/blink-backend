@@ -19,6 +19,9 @@ class FrameworkKitFilterTest {
         assertThat(FrameworkKitFilter.skipDirectory("tests")).isTrue();
         assertThat(FrameworkKitFilter.skipDirectory(".tools")).isTrue();
         assertThat(FrameworkKitFilter.skipDirectory("test_greenfield_setup")).isTrue();
+        assertThat(FrameworkKitFilter.skipDirectory(".cursor")).isFalse();
+        assertThat(FrameworkKitFilter.skipDirectory("commands", ".cursor")).isFalse();
+        assertThat(FrameworkKitFilter.skipDirectory("ai-sdlc", ".cursor")).isTrue();
 
         assertThat(FrameworkKitFilter.skipFile("Makefile")).isFalse();
         assertThat(FrameworkKitFilter.skipFile("validate_setup_readiness.py")).isFalse();

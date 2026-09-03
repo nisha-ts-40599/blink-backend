@@ -59,7 +59,7 @@ public class SetupAgentService {
                     project.getProjectName(),
                     trimToNull(requirementText),
                     project.getDescription(),
-                    Timeout.ofSeconds(20)
+                    Timeout.ofSeconds(60)
             );
             log.info(
                     "Download overlay ready status={} ms={}",
