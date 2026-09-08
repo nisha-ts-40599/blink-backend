@@ -38,6 +38,8 @@ import com.talentserv.blink.service.ZipPackageService;
 import com.talentserv.blink.config.BlinkProperties;
 
 import jakarta.validation.Valid;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 
 @RestController
 @RequestMapping("/api/projects")
@@ -45,6 +47,7 @@ public class ProjectController {
 
     private static final Logger log = LoggerFactory.getLogger(ProjectController.class);
     private static final MediaType ZIP = MediaType.parseMediaType("application/zip");
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final ProjectService projectService;
     private final RequirementMarkdownService requirementMarkdownService;
@@ -141,14 +144,15 @@ public class ProjectController {
             @RequestParam(value = "requirementsText", required = false) String requirementsText,
             @RequestParam(value = "repoName", required = false) List<String> repoNames,
             @RequestParam(value = "repoPurpose", required = false) List<String> repoPurposes,
-            @RequestParam(value = "repoDescription", required = false) List<String> repoDescriptions
+            @RequestParam(value = "repoDescription", required = false) List<String> repoDescriptions,
+            @RequestParam(value = "setupContext", required = false) String setupContext
     ) throws IOException {
         Project project = projectService.requireProject(id);
         long started = System.currentTimeMillis();
         log.info("Download start projectId={} name={}", id, project.getProjectName());
         String markdown = requirementMarkdownService.toMarkdown(project.getProjectName(), file, requirementsText);
-        log.info("Download calling setup-new-workspace");
-        var setup = setupAgentService.applyBestEffort(project, markdown);
+        log.info("Download building canonical setup workspace");
+        var setup = setupAgentService.applyBestEffort(project, markdown, parseSetupContext(setupContext));
         var overlay = SetupAgentService.overlayFiles(setup);
         log.info(
                 "Download setup status={} overlayFiles={} elapsedMs={}",
@@ -197,6 +201,9 @@ public class ProjectController {
                 .header("X-Blink-Setup-Status", setup.path("status").asText(""))
                 .header("X-Blink-Identity-Source", setup.path("identitySource").asText(""))
                 .header("X-Blink-Overlay-Count", String.valueOf(overlay.size()))
+                .header("X-Blink-Setup-Validated", "true")
+                .header("X-Blink-Context-Ready", String.valueOf(setup.path("contextReady").asBoolean(false)))
+                .header("X-Blink-Delivery-Ready", String.valueOf(setup.path("deliveryReady").asBoolean(false)))
                 .header("X-Blink-Folder-Status", folderStatus == null ? "" : folderStatus)
                 .contentType(ZIP)
                 .contentLength(bundle.zipBytes().length)
@@ -222,6 +229,21 @@ public class ProjectController {
             repos.add(new ZipPackageService.RepoFolder(name, purpose, description));
         }
         return repos;
+    }
+
+    private static JsonNode parseSetupContext(String setupContext) {
+        if (setupContext == null || setupContext.isBlank()) {
+            return null;
+        }
+        try {
+            JsonNode parsed = MAPPER.readTree(setupContext);
+            if (!parsed.isObject()) {
+                throw new IllegalArgumentException("Setup context must be an object.");
+            }
+            return parsed;
+        } catch (Exception ex) {
+            throw new IllegalArgumentException("Setup context is invalid.");
+        }
     }
 
     private ProjectResponse attachWorkspace(ProjectResponse project, boolean provision) {

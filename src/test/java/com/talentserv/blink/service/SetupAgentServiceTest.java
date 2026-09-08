@@ -2,7 +2,6 @@ package com.talentserv.blink.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -13,8 +12,6 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-
-import org.springframework.http.HttpStatus;
 
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ObjectNode;
@@ -29,17 +26,17 @@ class SetupAgentServiceTest {
     private ProjectService projectService;
 
     @Mock
-    private AgentRuntimeService agentRuntimeService;
+    private CanonicalSetupService canonicalSetupService;
 
     private SetupAgentService service;
 
     @BeforeEach
     void setUp() {
-        service = new SetupAgentService(projectService, agentRuntimeService);
+        service = new SetupAgentService(projectService, canonicalSetupService);
     }
 
     @Test
-    void startUsesRequirementThenCallsWorkerApply() throws Exception {
+    void startUsesRequirementThenCallsCanonicalApply() throws Exception {
         Project project = new Project();
         project.setId(42L);
         project.setProjectName("Food Delivery");
@@ -57,7 +54,7 @@ class SetupAgentServiceTest {
         body.putArray("overlayFiles").addObject()
                 .put("path", ".cursor/ai-sdlc/workspace-context.md")
                 .put("content", "# Food Delivery");
-        when(agentRuntimeService.invokeSetupApply(eq("Food Delivery"), eq("Users order food"), eq("Fallback description")))
+        when(canonicalSetupService.apply(eq(project), eq("Users order food"), eq(null)))
                 .thenReturn(body);
 
         var result = service.start(42L, new SetupAgentRequest("Users order food", "apply"));
@@ -66,7 +63,7 @@ class SetupAgentServiceTest {
         assertThat(result.identitySource()).isEqualTo("requirement");
         assertThat(result.overlayFiles()).hasSize(1);
         assertThat(result.overlayFiles().getFirst().path()).isEqualTo(".cursor/ai-sdlc/workspace-context.md");
-        verify(agentRuntimeService).invokeSetupApply("Food Delivery", "Users order food", "Fallback description");
+        verify(canonicalSetupService).apply(project, "Users order food", null);
     }
 
     @Test
@@ -82,33 +79,29 @@ class SetupAgentServiceTest {
     }
 
     @Test
-    void applyPassesNullRequirementSoWorkerCanUseDescription() {
+    void applyPassesNullRequirementSoCanonicalProjectorCanUseDescription() {
         Project project = new Project();
         project.setProjectName("Food Delivery");
         project.setDescription("A marketplace for nearby restaurants.");
-        when(agentRuntimeService.invokeSetupApply(any(), any(), any())).thenReturn(new ObjectMapper().createObjectNode());
+        when(canonicalSetupService.apply(eq(project), eq(null), eq(null))).thenReturn(new ObjectMapper().createObjectNode());
 
         service.apply(project, "  ");
 
         ArgumentCaptor<String> requirement = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<String> description = ArgumentCaptor.forClass(String.class);
-        verify(agentRuntimeService).invokeSetupApply(eq("Food Delivery"), requirement.capture(), description.capture());
+        verify(canonicalSetupService).apply(eq(project), requirement.capture(), eq(null));
         assertThat(requirement.getValue()).isNull();
-        assertThat(description.getValue()).isEqualTo("A marketplace for nearby restaurants.");
     }
 
     @Test
-    void applyBestEffortReturnsSkippedWhenWorkerFails() {
+    void applyBestEffortFailsClosedWhenCanonicalSetupFails() {
         Project project = new Project();
         project.setProjectName("Food Delivery");
-        when(agentRuntimeService.invokeSetupApply(any(), any(), any(), any()))
-                .thenThrow(new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "Agent runtime token is not configured."));
+        when(canonicalSetupService.apply(eq(project), eq("Users order food"), eq(null)))
+                .thenThrow(new ApiException(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE, "Projector is unavailable."));
 
-        var node = service.applyBestEffort(project, "Users order food");
-
-        assertThat(node.path("status").asText()).isEqualTo("skipped");
-        assertThat(node.path("overlayFiles")).isEmpty();
-        assertThat(node.path("message").asText()).contains("token");
+        assertThatThrownBy(() -> service.applyBestEffort(project, "Users order food"))
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("Projector");
     }
 
     @Test

@@ -1,5 +1,7 @@
 package com.talentserv.blink.config;
 
+import java.time.Duration;
+
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 @ConfigurationProperties(prefix = "blink")
@@ -41,6 +43,12 @@ public class BlinkProperties {
     private String s3BucketName = "";
     private String s3PublicBaseUrl = "";
     private String automationSdlcGitUrl = "https://github.com/AtulTalentServ/automation_sdlc.git";
+    /**
+     * Executable used to invoke the framework's deterministic setup projector.
+     * Docker supplies python3; Windows developers can set BLINK_CANONICAL_SETUP_PYTHON=python.
+     */
+    private String canonicalSetupPython = "python3";
+    private Duration canonicalSetupTimeout = Duration.ofSeconds(90);
 
     public String getAutomationSdlcPath() {
         return automationSdlcPath;
@@ -136,6 +144,22 @@ public class BlinkProperties {
 
     public void setAutomationSdlcGitUrl(String automationSdlcGitUrl) {
         this.automationSdlcGitUrl = automationSdlcGitUrl;
+    }
+
+    public String getCanonicalSetupPython() {
+        return canonicalSetupPython;
+    }
+
+    public void setCanonicalSetupPython(String canonicalSetupPython) {
+        this.canonicalSetupPython = canonicalSetupPython;
+    }
+
+    public Duration getCanonicalSetupTimeout() {
+        return canonicalSetupTimeout;
+    }
+
+    public void setCanonicalSetupTimeout(Duration canonicalSetupTimeout) {
+        this.canonicalSetupTimeout = canonicalSetupTimeout;
     }
 
     public boolean s3Enabled() {

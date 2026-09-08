@@ -11,6 +11,7 @@ public record SetupAgentResponse(
         Boolean gitWritten,
         String identitySource,
         List<OverlayFile> overlayFiles,
+        Integer acceptedFileCount,
         String nextCommand,
         String message,
         List<String> errors

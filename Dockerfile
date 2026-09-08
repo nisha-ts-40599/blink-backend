@@ -9,7 +9,7 @@ RUN mvn -q -DskipTests package
 FROM eclipse-temurin:25-jre
 WORKDIR /app
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git ca-certificates \
+    && apt-get install -y --no-install-recommends git python3 python3-yaml ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /src/target/blink-backend-0.1.0.jar app.jar
 ENV BLINK_AUTOMATION_SDLC_PATH=/app/automation_sdlc
