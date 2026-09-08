@@ -8,9 +8,9 @@ import jakarta.validation.constraints.Size;
 
 public record GroomClarifyRequest(
         @NotBlank(message = "Paste a short description of what you want to build first.")
-        @Size(max = 16000) String requirementText,
+        String requirementText,
         @Size(max = 255) String projectName,
         @Size(max = 64) String projectId,
-        @Size(max = 20) List<@Valid GroomAnswerRequest> answers
+        @Size(max = 60) List<@Valid GroomAnswerRequest> answers
 ) {
 }
