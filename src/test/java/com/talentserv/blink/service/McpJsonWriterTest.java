@@ -12,7 +12,8 @@ class McpJsonWriterTest {
     void alwaysIncludesFilesystemAndUsesWrapperWithWorkspaceFolder() {
         String json = McpJsonWriter.mcpJson(List.of());
         assertThat(json).contains("\"filesystem\"");
-        assertThat(json).contains(McpJsonWriter.UNIX_WRAPPER);
+        assertThat(json).contains("\"command\": \"powershell.exe\"");
+        assertThat(json).contains(McpJsonWriter.WINDOWS_WRAPPER);
         assertThat(json).contains("${workspaceFolder}");
         assertThat(json).doesNotContain("\"github\"");
         assertThat(json).doesNotContain("ghp_");
@@ -31,7 +32,7 @@ class McpJsonWriterTest {
         assertThat(json).contains("${env:CONFLUENCE_API_TOKEN}");
         assertThat(json).contains("mcp-atlassian");
         assertThat(json).contains("\"--yes\"");
-        assertThat(json).contains(McpJsonWriter.UNIX_WRAPPER);
+        assertThat(json).contains(McpJsonWriter.WINDOWS_WRAPPER);
     }
 
     @Test

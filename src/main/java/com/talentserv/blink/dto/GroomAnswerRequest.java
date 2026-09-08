@@ -7,6 +7,6 @@ public record GroomAnswerRequest(
         @NotBlank(message = "Each answer needs a questionId.") String questionId,
         @NotBlank(message = "Each answer needs an optionId.") String optionId,
         @Size(max = 500) String optionLabel,
-        @Size(max = 2000) String otherText
+        @Size(max = 20000) String otherText
 ) {
 }

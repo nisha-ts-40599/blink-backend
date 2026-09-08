@@ -22,11 +22,17 @@ public final class McpJsonWriter {
 
     public enum OsProfile {
         /**
-         * Default zip entry — same as macOS/Linux sample: bash wrapper under automation_sdlc.
-         * Works on Windows too if Git Bash / WSL can execute {@code .sh}.
+         * Default zip {@code mcp.json}: Windows PowerShell wrapper.
+         * Most Blink pilot machines are Windows; macOS/Linux users copy {@code mcp.unix.json}.
          */
-        PORTABLE(UNIX_WRAPPER, List.of()),
-        /** Windows PowerShell wrapper (recommended on Windows). */
+        PORTABLE("powershell.exe", List.of(
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                WINDOWS_WRAPPER
+        )),
+        /** Same as default — kept so docs/UI can name the Windows file explicitly. */
         WINDOWS("powershell.exe", List.of(
                 "-NoProfile",
                 "-ExecutionPolicy",
@@ -34,7 +40,7 @@ public final class McpJsonWriter {
                 "-File",
                 WINDOWS_WRAPPER
         )),
-        /** Explicit macOS / Linux alias of the portable wrapper. */
+        /** macOS / Linux bash wrapper. */
         UNIX(UNIX_WRAPPER, List.of());
 
         private final String command;
@@ -114,24 +120,27 @@ public final class McpJsonWriter {
         return """
                 # Cursor MCP setup
 
-                This zip matches the AI-SDLC MCP shape: Cursor starts
-                `automation_sdlc/scripts/mcp-npx.sh` (or `.ps1` on Windows). The wrapper:
+                Cursor loads `.cursor/mcp.json`. The default file uses the **Windows** PowerShell
+                wrapper (`mcp-npx.ps1`). macOS/Linux users should switch to `mcp.unix.json`.
 
-                1. Resolves your unzip folder at runtime (no hard-coded `/Users/...` paths)
+                The wrapper:
+
+                1. Resolves your unzip folder at runtime (no hard-coded machine paths)
                 2. Loads secrets from `automation_sdlc/.env.mcp`
-                3. Runs the MCP server packages via `npm exec`
+                3. Maps `JIRA_*` → `ATLASSIAN_*` for mcp-atlassian when needed
+                4. Runs MCP packages via `npm exec`
 
                 ## Files
 
                 | Path | Purpose |
                 | --- | --- |
-                | `.cursor/mcp.json` | Default (unix wrapper + `${workspaceFolder}`) |
-                | `.cursor/mcp.windows.json` | Windows PowerShell wrapper |
-                | `.cursor/mcp.unix.json` | Same as default |
+                | `.cursor/mcp.json` | **Default = Windows** (PowerShell + `mcp-npx.ps1`) |
+                | `.cursor/mcp.windows.json` | Same as default |
+                | `.cursor/mcp.unix.json` | macOS / Linux (`mcp-npx.sh`) |
                 | `automation_sdlc/env.mcp.example` | **Visible** copy (Cursor often hides `.env*` files) |
                 | `automation_sdlc/.env.mcp.example` | Same content — copy → `.env.mcp` and fill tokens |
-                | `automation_sdlc/scripts/mcp-npx.sh` | macOS / Linux / Git Bash launcher |
                 | `automation_sdlc/scripts/mcp-npx.ps1` | Windows launcher |
+                | `automation_sdlc/scripts/mcp-npx.sh` | macOS / Linux launcher |
 
                 ## First-time setup (2 minutes)
 
@@ -141,12 +150,12 @@ public final class McpJsonWriter {
                 **Windows**
                 ```powershell
                 Copy-Item automation_sdlc\\env.mcp.example automation_sdlc\\.env.mcp
-                Copy-Item .cursor\\mcp.windows.json .cursor\\mcp.json -Force
                 notepad automation_sdlc\\.env.mcp
                 ```
 
                 **macOS / Linux**
                 ```bash
+                cp .cursor/mcp.unix.json .cursor/mcp.json
                 cp automation_sdlc/env.mcp.example automation_sdlc/.env.mcp
                 # edit automation_sdlc/.env.mcp — add tokens
                 ```
@@ -181,7 +190,12 @@ public final class McpJsonWriter {
             out.append("JIRA_URL=").append(valueOr(site.jiraUrl(), "https://YOUR_ORG.atlassian.net")).append('\n');
             out.append("JIRA_USERNAME=").append(valueOr(site.jiraUsername(), "you@example.com")).append('\n');
             out.append("JIRA_API_TOKEN=\n");
-            out.append("JIRA_CLOUD_ID=\n\n");
+            out.append("JIRA_CLOUD_ID=\n");
+            out.append("# mcp-atlassian also reads these (wrapper fills from JIRA_* if blank):\n");
+            out.append("ATLASSIAN_BASE_URL=").append(valueOr(site.jiraUrl(), "https://YOUR_ORG.atlassian.net")).append('\n');
+            out.append("ATLASSIAN_SITE_URL=").append(valueOr(site.jiraUrl(), "https://YOUR_ORG.atlassian.net")).append('\n');
+            out.append("ATLASSIAN_EMAIL=").append(valueOr(site.jiraUsername(), "you@example.com")).append('\n');
+            out.append("ATLASSIAN_API_TOKEN=\n\n");
         }
         if (providers.contains("confluence")) {
             String base = valueOr(site.confluenceUrl(), "https://YOUR_ORG.atlassian.net");
