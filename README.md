@@ -75,8 +75,8 @@ The GitHub repo `blink-backend` already *is* the API. The `Dockerfile` sits at t
 | Key | Value |
 | --- | --- |
 | `DATABASE_URL` | **Required.** Link the existing Postgres service, or paste the **Internal** Database URL. Without this the API tries `localhost` and Hibernate fails. **Do not set `SPRING_PROFILES_ACTIVE=nodb` here.** |
-| `BLINK_AGENT_RUNTIME_URL` | `https://blink-agent-runtime.rushikesh-kate.workers.dev` |
-| `BLINK_AGENT_RUNTIME_TOKEN` | Same value as the Worker `AGENT_SERVICE_TOKEN` secret. Required for grooming and zip overlay. |
+| `BLINK_AGENT_RUNTIME_URL` | `https://z5i3yybrx1.execute-api.us-west-2.amazonaws.com` (AWS Lambda endpoint; defaults to this if omitted) |
+| `BLINK_AGENT_RUNTIME_TOKEN` | `blink-groom-2026` (defaults to this if omitted) |
 | `BLINK_AUTOMATION_SDLC_GIT_URL` | `https://github.com/AtulTalentServ/automation_sdlc.git` (Docker image includes git so the kit can be cloned when `/app/automation_sdlc` is empty) |
 | `BLINK_CORS_ORIGINS` | `https://YOUR-FRONTEND.onrender.com` (add after the static site exists; you can also keep `http://localhost:5173`) |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | **Required for S3 workspaces.** Save & Continue copies the kit to `<slug>_<id>_workspace/`. |

@@ -28,14 +28,14 @@ public class BlinkProperties {
     private String setupAgentUrl = "http://127.0.0.1:8091/setup/start";
 
     /**
-     * Cloudflare Worker agent runtime (wrangler dev defaults to :8787).
+     * Agent runtime URL (defaults to live AWS Lambda endpoint; local dev uses http://127.0.0.1:8787).
      */
-    private String agentRuntimeUrl = "https://blink-agent-runtime.rushikesh-kate.workers.dev";
+    private String agentRuntimeUrl = "https://z5i3yybrx1.execute-api.us-west-2.amazonaws.com";
 
     /**
-     * Shared bearer token between Blink Backend and the Worker.
+     * Shared bearer token between Blink Backend and the Agent Runtime.
      */
-    private String agentRuntimeToken = "";
+    private String agentRuntimeToken = "blink-groom-2026";
 
     private String awsAccessKeyId = "";
     private String awsSecretAccessKey = "";
