@@ -152,7 +152,8 @@ class ZipPackageServiceTest {
         }
 
         assertThat(mcpJson).isNotNull();
-        assertThat(mcpJson).contains(McpJsonWriter.UNIX_WRAPPER);
+        assertThat(mcpJson).contains("\"command\": \"powershell.exe\"");
+        assertThat(mcpJson).contains(McpJsonWriter.WINDOWS_WRAPPER);
         assertThat(mcpJson).contains("\"github\"", "\"jira\"", "${env:GITHUB_PERSONAL_ACCESS_TOKEN}", "${env:JIRA_API_TOKEN}");
         assertThat(mcpJson).doesNotContain("ghp_", "\"confluence\"", "/Users/");
         assertThat(windowsJson).contains("\"command\": \"powershell.exe\"");
