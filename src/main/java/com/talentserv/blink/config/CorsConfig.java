@@ -34,8 +34,11 @@ public class CorsConfig {
                                 "X-Blink-File-Count",
                                 "X-Blink-Next-Command",
                                 "X-Blink-Setup-Status",
+                                "X-Blink-Setup-Validated",
                                 "X-Blink-Identity-Source",
                                 "X-Blink-Overlay-Count",
+                                "X-Blink-Context-Ready",
+                                "X-Blink-Delivery-Ready",
                                 "X-Blink-Folder-Status"
                         )
                         .maxAge(3600);

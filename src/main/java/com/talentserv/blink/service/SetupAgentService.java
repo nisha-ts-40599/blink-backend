@@ -4,15 +4,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
-import org.apache.hc.core5.util.Timeout;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
 import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.ObjectMapper;
-import tools.jackson.databind.node.ObjectNode;
 import com.talentserv.blink.domain.Project;
 import com.talentserv.blink.dto.SetupAgentRequest;
 import com.talentserv.blink.dto.SetupAgentResponse;
@@ -21,15 +16,12 @@ import com.talentserv.blink.error.ApiException;
 @Service
 public class SetupAgentService {
 
-    private static final Logger log = LoggerFactory.getLogger(SetupAgentService.class);
-    private static final ObjectMapper MAPPER = new ObjectMapper();
-
     private final ProjectService projectService;
-    private final AgentRuntimeService agentRuntimeService;
+    private final CanonicalSetupService canonicalSetupService;
 
-    public SetupAgentService(ProjectService projectService, AgentRuntimeService agentRuntimeService) {
+    public SetupAgentService(ProjectService projectService, CanonicalSetupService canonicalSetupService) {
         this.projectService = projectService;
-        this.agentRuntimeService = agentRuntimeService;
+        this.canonicalSetupService = canonicalSetupService;
     }
 
     public SetupAgentResponse start(Long projectId, SetupAgentRequest request) {
@@ -45,40 +37,19 @@ public class SetupAgentService {
     }
 
     public JsonNode apply(Project project, String requirementText) {
-        String requirement = trimToNull(requirementText);
-        String description = project.getDescription();
-        return agentRuntimeService.invokeSetupApply(project.getProjectName(), requirement, description);
+        return canonicalSetupService.apply(project, trimToNull(requirementText), null);
     }
 
-    /** Zip download still succeeds if the hosted setup command is unavailable. */
+    /**
+     * Full setup is fail-closed. A zip that claims a canonical overlay but
+     * contains the former partial Worker result is not a valid delivery.
+     */
     public JsonNode applyBestEffort(Project project, String requirementText) {
-        long started = System.currentTimeMillis();
-        try {
-            log.info("Download overlay calling setup-new-workspace project={}", project.getProjectName());
-            JsonNode result = agentRuntimeService.invokeSetupApply(
-                    project.getProjectName(),
-                    trimToNull(requirementText),
-                    project.getDescription(),
-                    Timeout.ofSeconds(60)
-            );
-            log.info(
-                    "Download overlay ready status={} ms={}",
-                    result.path("status").asText(""),
-                    System.currentTimeMillis() - started
-            );
-            return result;
-        } catch (RuntimeException ex) {
-            log.warn(
-                    "Setup overlay skipped after {}ms: {}",
-                    System.currentTimeMillis() - started,
-                    ex.getMessage()
-            );
-            ObjectNode node = MAPPER.createObjectNode();
-            node.put("status", "skipped");
-            node.put("message", ex.getMessage() == null ? "Setup overlay was skipped." : ex.getMessage());
-            node.putArray("overlayFiles");
-            return node;
-        }
+        return applyBestEffort(project, requirementText, null);
+    }
+
+    public JsonNode applyBestEffort(Project project, String requirementText, JsonNode blinkContext) {
+        return canonicalSetupService.apply(project, trimToNull(requirementText), blinkContext);
     }
 
     public static List<ZipPackageService.OverlayFile> overlayFiles(JsonNode root) {
@@ -136,6 +107,7 @@ public class SetupAgentService {
                 boolOrNull(root.get("gitWritten")),
                 textOrNull(root.get("identitySource")),
                 overlayFiles,
+                root.path("acceptedFileCount").isInt() ? root.path("acceptedFileCount").asInt() : overlayFiles.size(),
                 textOrNull(root.get("nextCommand")),
                 textOrNull(root.get("message")),
                 errors

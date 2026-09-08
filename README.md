@@ -12,7 +12,7 @@ Java 25 / Spring Boot 4.1.0 API for the `blink_demo` wizard. It persists the fir
 
 JDK 25 is required. This repo includes the Maven Wrapper, so you do not need a global `mvn` install.
 
-**Local without a database:** set `SPRING_PROFILES_ACTIVE=nodb` in `.env`. Projects are saved to `.blink-nodb.json` in this folder (gitignored) so they survive a Java restart. Grooming and download still work.
+**Local without a database:** set `SPRING_PROFILES_ACTIVE=nodb` in `.env`. Projects are saved to `.blink-nodb.json` in this folder (gitignored) so they survive a Java restart. Grooming and download still work. Full workspace setup also requires Python 3; on Windows set `BLINK_CANONICAL_SETUP_PYTHON=python` when `python3` is unavailable.
 
 **Production / Render must not set `SPRING_PROFILES_ACTIVE=nodb`.** Use Postgres (`DATABASE_URL`). Always set `BLINK_AGENT_RUNTIME_TOKEN` to the Worker `AGENT_SERVICE_TOKEN`. `.env` is gitignored.
 

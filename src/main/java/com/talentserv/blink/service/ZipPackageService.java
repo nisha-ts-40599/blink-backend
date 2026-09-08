@@ -33,7 +33,7 @@ public class ZipPackageService {
 
     public static final String WORKSPACE_ROOT = "MY_PILOT_DEMO";
     public static final String DEFAULT_ARCHIVE_NAME = WORKSPACE_ROOT + ".zip";
-    public static final String NEXT_SDLC_COMMAND = "/setup-new-workspace";
+    public static final String NEXT_SDLC_COMMAND = "/configure-stakeholders";
 
     static final String BUNDLED_AUTOMATION_SDLC = "/templates/automation_sdlc.zip";
     private static final Set<String> RESERVED_TOP_LEVEL = Set.of(
@@ -239,8 +239,27 @@ public class ZipPackageService {
             return null;
         }
         String normalized = path.replace('\\', '/').replaceFirst("^/+", "");
-        if (normalized.contains("..") || !normalized.startsWith(".cursor/ai-sdlc/") || normalized.endsWith("/")) {
+        if (normalized.indexOf('\u0000') >= 0
+                || normalized.indexOf('\r') >= 0
+                || normalized.indexOf('\n') >= 0
+                || !normalized.startsWith(".cursor/ai-sdlc/")
+                || normalized.endsWith("/")
+                || normalized.contains("//")) {
             return null;
+        }
+        String[] segments = normalized.split("/");
+        if (segments.length < 3) {
+            return null;
+        }
+        for (String segment : segments) {
+            if (segment.isBlank()
+                    || ".".equals(segment)
+                    || "..".equals(segment)
+                    || segment.endsWith(".lock")
+                    || ".cache".equals(segment)
+                    || segment.indexOf(':') >= 0) {
+                return null;
+            }
         }
         return normalized;
     }
