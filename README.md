@@ -148,7 +148,7 @@ Set `SPRING_JPA_DDL_AUTO=none` after the schema is stable if you do not want Hib
 | POST | `/api/projects` | Save & Continue (first time) |
 | PUT | `/api/projects/{id}` | Save & Continue (after going back) |
 | GET | `/api/projects/{id}` | Reload |
-| POST | `/api/projects/{id}/download` | Download the S3 workspace zip (`<name>_workspace.zip`). Runs setup apply, writes `.cursor/`, then zips the bucket prefix. |
+| POST | `/api/projects/{id}/download` | Download workspace zip. Includes `.cursor/mcp.json` (portable `npx`), `.cursor/mcp.windows.json` (`npx.cmd`), `.cursor/mcp.unix.json`, `.cursor/MCP_SETUP.md`, and `automation_sdlc/.env.mcp.example`. Secrets use `${env:...}` only. Form field `mcpProvider` repeats connected ids (`github`, `jira`, `confluence`). |
 | POST | `/api/grooming/clarify` | Hosted `/clarify-requirement` discovery |
 | POST | `/api/projects/{id}/setup` | Hosted `/setup-new-workspace` apply |
 | GET | `/actuator/health` | Health |

@@ -77,10 +77,11 @@ class ZipPackageServiceTest {
             assertThat(bundle.filename()).isEqualTo("gymantic_workspace.zip");
             assertThat(bundle.structure())
                     .extracting(ZipPackageService.WorkspaceEntry::name)
-                    .containsExactly(
+                    .contains(
                             "requirement.md",
                             "automation_sdlc",
                             ".cursor",
+                            ".cursor/mcp.json",
                             "gymantic-backend",
                             "gymantic-frontend",
                             "gymantic-db",
@@ -90,7 +91,16 @@ class ZipPackageServiceTest {
                     "gymantic_workspace/",
                     "gymantic_workspace/.cursor/rules.md",
                     "gymantic_workspace/.cursor/commands/setup-new-workspace.md",
+                    "gymantic_workspace/.cursor/mcp.json",
+                    "gymantic_workspace/.cursor/mcp.windows.json",
+                    "gymantic_workspace/.cursor/mcp.unix.json",
+                    "gymantic_workspace/.cursor/MCP_SETUP.md",
+                    "gymantic_workspace/MCP_SETUP.md",
                     "gymantic_workspace/automation_sdlc/marker.txt",
+                    "gymantic_workspace/automation_sdlc/.env.mcp.example",
+                    "gymantic_workspace/automation_sdlc/env.mcp.example",
+                    "gymantic_workspace/automation_sdlc/scripts/mcp-npx.sh",
+                    "gymantic_workspace/automation_sdlc/scripts/mcp-npx.ps1",
                     "gymantic_workspace/requirement.md",
                     "gymantic_workspace/gymantic-backend/README.md",
                     "gymantic_workspace/gymantic-frontend/README.md",
@@ -106,6 +116,48 @@ class ZipPackageServiceTest {
         } finally {
             System.setProperty("user.dir", previous);
         }
+    }
+
+    @Test
+    void zipIncludesMcpJsonForConnectedProvidersWithEnvRefsOnly() throws Exception {
+        BlinkProperties properties = new BlinkProperties();
+        properties.setAutomationSdlcPath(tempDir.resolve("missing-sdlc").toString());
+        ZipPackageService service = new ZipPackageService(properties);
+
+        ZipPackageService.WorkspaceBundle bundle = service.packageWorkspace(
+                new ZipPackageService.PackageRequest(
+                        "Acme",
+                        "# req\n",
+                        List.of(),
+                        List.of(),
+                        List.of("github", "jira")
+                )
+        );
+
+        String mcpJson = null;
+        String windowsJson = null;
+        String envExample = null;
+        try (ZipInputStream zip = new ZipInputStream(new ByteArrayInputStream(bundle.zipBytes()))) {
+            for (var entry = zip.getNextEntry(); entry != null; entry = zip.getNextEntry()) {
+                if (entry.getName().endsWith("/.cursor/mcp.json")) {
+                    mcpJson = new String(zip.readAllBytes(), StandardCharsets.UTF_8);
+                }
+                if (entry.getName().endsWith("/.cursor/mcp.windows.json")) {
+                    windowsJson = new String(zip.readAllBytes(), StandardCharsets.UTF_8);
+                }
+                if (entry.getName().endsWith("/automation_sdlc/.env.mcp.example")) {
+                    envExample = new String(zip.readAllBytes(), StandardCharsets.UTF_8);
+                }
+            }
+        }
+
+        assertThat(mcpJson).isNotNull();
+        assertThat(mcpJson).contains(McpJsonWriter.UNIX_WRAPPER);
+        assertThat(mcpJson).contains("\"github\"", "\"jira\"", "${env:GITHUB_PERSONAL_ACCESS_TOKEN}", "${env:JIRA_API_TOKEN}");
+        assertThat(mcpJson).doesNotContain("ghp_", "\"confluence\"", "/Users/");
+        assertThat(windowsJson).contains("\"command\": \"powershell.exe\"");
+        assertThat(windowsJson).contains(McpJsonWriter.WINDOWS_WRAPPER);
+        assertThat(envExample).contains("GITHUB_PERSONAL_ACCESS_TOKEN=", "JIRA_URL=");
     }
 
     @Test
