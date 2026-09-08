@@ -61,15 +61,38 @@ public class ZipPackageService {
             String workspaceRoot,
             String requirementMarkdown,
             List<RepoFolder> repositories,
-            List<OverlayFile> overlayFiles
+            List<OverlayFile> overlayFiles,
+            List<String> mcpProviders,
+            McpJsonWriter.SiteHints mcpSiteHints
     ) {
         public PackageRequest {
             repositories = repositories == null ? List.of() : List.copyOf(repositories);
             overlayFiles = overlayFiles == null ? List.of() : List.copyOf(overlayFiles);
+            mcpProviders = mcpProviders == null ? List.of() : List.copyOf(mcpProviders);
+            mcpSiteHints = mcpSiteHints == null ? McpJsonWriter.SiteHints.empty() : mcpSiteHints;
         }
 
         public PackageRequest(String workspaceRoot, String requirementMarkdown, List<RepoFolder> repositories) {
-            this(workspaceRoot, requirementMarkdown, repositories, List.of());
+            this(workspaceRoot, requirementMarkdown, repositories, List.of(), List.of(), McpJsonWriter.SiteHints.empty());
+        }
+
+        public PackageRequest(
+                String workspaceRoot,
+                String requirementMarkdown,
+                List<RepoFolder> repositories,
+                List<OverlayFile> overlayFiles
+        ) {
+            this(workspaceRoot, requirementMarkdown, repositories, overlayFiles, List.of(), McpJsonWriter.SiteHints.empty());
+        }
+
+        public PackageRequest(
+                String workspaceRoot,
+                String requirementMarkdown,
+                List<RepoFolder> repositories,
+                List<OverlayFile> overlayFiles,
+                List<String> mcpProviders
+        ) {
+            this(workspaceRoot, requirementMarkdown, repositories, overlayFiles, mcpProviders, McpJsonWriter.SiteHints.empty());
         }
     }
 
@@ -119,12 +142,20 @@ public class ZipPackageService {
                         sdlc,
                         "automation_sdlc",
                         Set.of(".cursor"),
+                        Set.of(".env.mcp.example"),
                         files,
                         structure,
                         missing("automation_sdlc")
                 );
             } else {
-                int copied = copyBundledPrefix(zip, "", zipPath(root, "automation_sdlc"), Set.of(".cursor"), files);
+                int copied = copyBundledPrefix(
+                        zip,
+                        "",
+                        zipPath(root, "automation_sdlc"),
+                        Set.of(".cursor"),
+                        Set.of(".env.mcp.example"),
+                        files
+                );
                 if (copied == 0) {
                     putText(zip, zipPath(root, "automation_sdlc/README.md"), missing("automation_sdlc"));
                     files.incrementAndGet();
@@ -134,6 +165,7 @@ public class ZipPackageService {
 
             addCursorOverlay(zip, root, files, structure);
             addAgentOverlay(zip, root, request.overlayFiles(), files, structure);
+            addMcpConfig(zip, root, request.mcpProviders(), request.mcpSiteHints(), files, structure);
             addConfiguredRepos(zip, root, request.repositories(), files, structure);
         }
         WorkspaceBundle bundle = new WorkspaceBundle(buffer.toByteArray(), root + ".zip", List.copyOf(structure), files.get());
@@ -165,11 +197,13 @@ public class ZipPackageService {
             throws IOException {
         Path overlay = resolveCursorOverlay();
         int copied = 0;
+        // Skip host MCP configs — download always writes portable OS variants via addMcpConfig.
+        Set<String> skipFiles = Set.of("mcp.json", "mcp.windows.json", "mcp.unix.json", "MCP_SETUP.md");
         if (overlay != null) {
-            copied = copyTree(zip, overlay, zipPath(root, ".cursor"), Set.of(), files);
+            copied = copyTree(zip, overlay, zipPath(root, ".cursor"), Set.of(), skipFiles, files);
         }
         if (copied == 0) {
-            copied = copyBundledPrefix(zip, ".cursor/", zipPath(root, ".cursor"), Set.of(), files);
+            copied = copyBundledPrefix(zip, ".cursor/", zipPath(root, ".cursor"), Set.of(), skipFiles, files);
         }
         if (copied == 0) {
             putText(zip, zipPath(root, ".cursor/README.md"), missing(".cursor"));
@@ -228,6 +262,95 @@ public class ZipPackageService {
             }
         }
         return normalized;
+    }
+
+    private void addMcpConfig(
+            ZipOutputStream zip,
+            String root,
+            List<String> mcpProviders,
+            McpJsonWriter.SiteHints siteHints,
+            AtomicInteger files,
+            List<WorkspaceEntry> structure
+    ) throws IOException {
+        putText(zip, zipPath(root, ".cursor/mcp.json"), McpJsonWriter.mcpJson(mcpProviders));
+        files.incrementAndGet();
+        putText(
+                zip,
+                zipPath(root, ".cursor/mcp.windows.json"),
+                McpJsonWriter.mcpJson(mcpProviders, McpJsonWriter.OsProfile.WINDOWS)
+        );
+        files.incrementAndGet();
+        putText(
+                zip,
+                zipPath(root, ".cursor/mcp.unix.json"),
+                McpJsonWriter.mcpJson(mcpProviders, McpJsonWriter.OsProfile.UNIX)
+        );
+        files.incrementAndGet();
+        String setup = McpJsonWriter.setupReadme();
+        // Cursor loads .cursor/mcp.json; also put a root copy so Explorer users find setup instructions.
+        putText(zip, zipPath(root, ".cursor/MCP_SETUP.md"), setup);
+        files.incrementAndGet();
+        putText(zip, zipPath(root, "MCP_SETUP.md"), setup);
+        files.incrementAndGet();
+        String envExample = McpJsonWriter.envMcpExample(mcpProviders, siteHints);
+        // Canonical name for the wrapper; also ship a non-dot twin — Cursor often hides `.env*`.
+        putText(zip, zipPath(root, "automation_sdlc/.env.mcp.example"), envExample);
+        files.incrementAndGet();
+        putText(zip, zipPath(root, "automation_sdlc/env.mcp.example"), envExample);
+        files.incrementAndGet();
+        // Framework kit skips automation_sdlc/scripts/ — always ship the MCP wrappers the json points at.
+        addMcpWrapperScripts(zip, root, files);
+        if (structure.stream().noneMatch(entry -> ".cursor".equals(entry.name()))) {
+            structure.add(new WorkspaceEntry(".cursor", "directory"));
+        }
+        if (structure.stream().noneMatch(entry -> ".cursor/mcp.json".equals(entry.name()))) {
+            structure.add(new WorkspaceEntry(".cursor/mcp.json", "file"));
+        }
+        if (structure.stream().noneMatch(entry -> "automation_sdlc/env.mcp.example".equals(entry.name()))) {
+            structure.add(new WorkspaceEntry("automation_sdlc/env.mcp.example", "file"));
+        }
+        if (structure.stream().noneMatch(entry -> "MCP_SETUP.md".equals(entry.name()))) {
+            structure.add(new WorkspaceEntry("MCP_SETUP.md", "file"));
+        }
+    }
+
+    private void addMcpWrapperScripts(ZipOutputStream zip, String root, AtomicInteger files) throws IOException {
+        Path sdlc = resolveAutomationSdlc();
+        copyOrEmbedWrapper(zip, root, sdlc, "mcp-npx.sh", files);
+        copyOrEmbedWrapper(zip, root, sdlc, "mcp-npx.ps1", files);
+    }
+
+    private void copyOrEmbedWrapper(
+            ZipOutputStream zip,
+            String root,
+            Path sdlc,
+            String scriptName,
+            AtomicInteger files
+    ) throws IOException {
+        String zipEntry = zipPath(root, "automation_sdlc/scripts/" + scriptName);
+        if (sdlc != null) {
+            Path file = sdlc.resolve("scripts").resolve(scriptName);
+            if (Files.isRegularFile(file)) {
+                zip.putNextEntry(new ZipEntry(zipEntry));
+                Files.copy(file, zip);
+                zip.closeEntry();
+                files.incrementAndGet();
+                return;
+            }
+        }
+        // Fallback so the zip still references a runnable stub if disk copy is missing.
+        String stub = scriptName.endsWith(".ps1")
+                ? """
+                Write-Error "mcp-npx.ps1 missing from automation_sdlc/scripts — re-download or copy from AI-SDLC."
+                exit 1
+                """
+                : """
+                #!/usr/bin/env bash
+                echo "mcp-npx.sh missing from automation_sdlc/scripts — re-download or copy from AI-SDLC." >&2
+                exit 1
+                """;
+        putText(zip, zipEntry, stub);
+        files.incrementAndGet();
     }
 
     private void addConfiguredRepos(
@@ -315,12 +438,13 @@ public class ZipPackageService {
             Path source,
             String zipName,
             Set<String> extraSkipDirs,
+            Set<String> skipFileNames,
             AtomicInteger files,
             List<WorkspaceEntry> structure,
             String placeholder
     ) throws IOException {
         if (source != null && Files.isDirectory(source)) {
-            int copied = copyTree(zip, source, zipPath(root, zipName), extraSkipDirs, files);
+            int copied = copyTree(zip, source, zipPath(root, zipName), extraSkipDirs, skipFileNames, files);
             if (copied > 0) {
                 structure.add(new WorkspaceEntry(zipName, "directory"));
                 return;
@@ -336,6 +460,17 @@ public class ZipPackageService {
             Path root,
             String zipPrefix,
             Set<String> extraSkipDirs,
+            AtomicInteger files
+    ) throws IOException {
+        return copyTree(zip, root, zipPrefix, extraSkipDirs, Set.of(), files);
+    }
+
+    private int copyTree(
+            ZipOutputStream zip,
+            Path root,
+            String zipPrefix,
+            Set<String> extraSkipDirs,
+            Set<String> skipFileNames,
             AtomicInteger files
     ) throws IOException {
         AtomicInteger copied = new AtomicInteger();
@@ -355,7 +490,8 @@ public class ZipPackageService {
 
             @Override
             public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-                if (skipFile(file.getFileName().toString())) {
+                String fileName = file.getFileName().toString();
+                if (skipFile(fileName) || skipFileNames.contains(fileName)) {
                     return FileVisitResult.CONTINUE;
                 }
                 String relative = root.relativize(file).toString().replace('\\', '/');
@@ -371,7 +507,7 @@ public class ZipPackageService {
     }
 
     int copyBundledPrefix(ZipOutputStream zip, String entryPrefix, String zipPrefix) throws IOException {
-        return copyBundledPrefix(zip, entryPrefix, zipPrefix, Set.of(), new AtomicInteger());
+        return copyBundledPrefix(zip, entryPrefix, zipPrefix, Set.of(), Set.of(), new AtomicInteger());
     }
 
     int copyBundledPrefix(
@@ -379,6 +515,17 @@ public class ZipPackageService {
             String entryPrefix,
             String zipPrefix,
             Set<String> skipTopLevel,
+            AtomicInteger files
+    ) throws IOException {
+        return copyBundledPrefix(zip, entryPrefix, zipPrefix, skipTopLevel, Set.of(), files);
+    }
+
+    int copyBundledPrefix(
+            ZipOutputStream zip,
+            String entryPrefix,
+            String zipPrefix,
+            Set<String> skipTopLevel,
+            Set<String> skipFileNames,
             AtomicInteger files
     ) throws IOException {
         try (InputStream in = ZipPackageService.class.getResourceAsStream(BUNDLED_AUTOMATION_SDLC)) {
@@ -401,7 +548,7 @@ public class ZipPackageService {
                         }
                         name = name.substring(entryPrefix.length());
                     }
-                    if (name.isBlank() || skipBundledPath(name, skipTopLevel)) {
+                    if (name.isBlank() || skipBundledPath(name, skipTopLevel, skipFileNames)) {
                         continue;
                     }
                     zip.putNextEntry(new ZipEntry(zipPrefix + "/" + name));
@@ -415,7 +562,7 @@ public class ZipPackageService {
         }
     }
 
-    private static boolean skipBundledPath(String relative, Set<String> skipTopLevel) {
+    private static boolean skipBundledPath(String relative, Set<String> skipTopLevel, Set<String> skipFileNames) {
         String[] parts = relative.split("/");
         if (parts.length > 0 && skipTopLevel.contains(parts[0])) {
             return true;
@@ -427,7 +574,7 @@ public class ZipPackageService {
             if (!last && FrameworkKitFilter.skipDirectory(part, parent)) {
                 return true;
             }
-            if (last && skipFile(part)) {
+            if (last && (skipFile(part) || skipFileNames.contains(part))) {
                 return true;
             }
         }

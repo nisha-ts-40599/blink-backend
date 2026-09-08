@@ -29,6 +29,7 @@ import com.talentserv.blink.dto.SetupAgentRequest;
 import com.talentserv.blink.dto.SetupAgentResponse;
 import com.talentserv.blink.dto.WorkspaceInventoryResponse;
 import com.talentserv.blink.dto.WorkspaceStatusResponse;
+import com.talentserv.blink.service.McpJsonWriter;
 import com.talentserv.blink.service.ProjectService;
 import com.talentserv.blink.service.RequirementMarkdownService;
 import com.talentserv.blink.service.S3WorkspaceService;
@@ -145,7 +146,12 @@ public class ProjectController {
             @RequestParam(value = "repoName", required = false) List<String> repoNames,
             @RequestParam(value = "repoPurpose", required = false) List<String> repoPurposes,
             @RequestParam(value = "repoDescription", required = false) List<String> repoDescriptions,
-            @RequestParam(value = "setupContext", required = false) String setupContext
+            @RequestParam(value = "setupContext", required = false) String setupContext,
+            @RequestParam(value = "mcpProvider", required = false) List<String> mcpProviders,
+            @RequestParam(value = "mcpJiraUrl", required = false) String mcpJiraUrl,
+            @RequestParam(value = "mcpJiraEmail", required = false) String mcpJiraEmail,
+            @RequestParam(value = "mcpConfluenceUrl", required = false) String mcpConfluenceUrl,
+            @RequestParam(value = "mcpConfluenceEmail", required = false) String mcpConfluenceEmail
     ) throws IOException {
         Project project = projectService.requireProject(id);
         long started = System.currentTimeMillis();
@@ -178,7 +184,9 @@ public class ProjectController {
                         ZipPackageService.workspaceRootName(project.getProjectName(), id),
                         markdown,
                         toRepoFolders(repoNames, repoPurposes, repoDescriptions),
-                        overlay
+                        overlay,
+                        mcpProviders == null ? List.of() : mcpProviders,
+                        new McpJsonWriter.SiteHints(mcpJiraUrl, mcpJiraEmail, mcpConfluenceUrl, mcpConfluenceEmail)
                 )
         );
         log.info(
