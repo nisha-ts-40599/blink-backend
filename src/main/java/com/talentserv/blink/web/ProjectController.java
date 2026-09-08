@@ -23,12 +23,15 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
 import com.talentserv.blink.domain.Project;
+import com.talentserv.blink.dto.ConfigureStakeholdersResponse;
 import com.talentserv.blink.dto.ProjectRequest;
 import com.talentserv.blink.dto.ProjectResponse;
 import com.talentserv.blink.dto.SetupAgentRequest;
 import com.talentserv.blink.dto.SetupAgentResponse;
+import com.talentserv.blink.dto.StakeholderRequest;
 import com.talentserv.blink.dto.WorkspaceInventoryResponse;
 import com.talentserv.blink.dto.WorkspaceStatusResponse;
+import com.talentserv.blink.service.AgentRuntimeService;
 import com.talentserv.blink.service.McpJsonWriter;
 import com.talentserv.blink.service.ProjectService;
 import com.talentserv.blink.service.RequirementMarkdownService;
@@ -55,6 +58,7 @@ public class ProjectController {
     private final ZipPackageService zipPackageService;
     private final SetupAgentService setupAgentService;
     private final S3WorkspaceService s3WorkspaceService;
+    private final AgentRuntimeService agentRuntimeService;
     private final BlinkProperties properties;
 
     public ProjectController(
@@ -63,6 +67,7 @@ public class ProjectController {
             ZipPackageService zipPackageService,
             SetupAgentService setupAgentService,
             S3WorkspaceService s3WorkspaceService,
+            AgentRuntimeService agentRuntimeService,
             BlinkProperties properties
     ) {
         this.projectService = projectService;
@@ -70,6 +75,7 @@ public class ProjectController {
         this.zipPackageService = zipPackageService;
         this.setupAgentService = setupAgentService;
         this.s3WorkspaceService = s3WorkspaceService;
+        this.agentRuntimeService = agentRuntimeService;
         this.properties = properties;
     }
 
@@ -100,12 +106,74 @@ public class ProjectController {
 
     @PostMapping
     public ProjectResponse create(@Valid @RequestBody ProjectRequest request) {
-        return attachWorkspace(projectService.create(request), true);
+        ProjectResponse created = attachWorkspace(projectService.create(request), true);
+        return applyStakeholderGovernance(created, request.stakeholders());
     }
 
     @PutMapping("/{id}")
     public ProjectResponse update(@PathVariable Long id, @Valid @RequestBody ProjectRequest request) {
-        return attachWorkspace(projectService.update(id, request), true);
+        ProjectResponse updated = attachWorkspace(projectService.update(id, request), true);
+        return applyStakeholderGovernance(updated, request.stakeholders());
+    }
+
+    @PostMapping("/{id}/configure-stakeholders")
+    public ConfigureStakeholdersResponse configureStakeholders(
+            @PathVariable Long id,
+            @RequestBody(required = false) List<StakeholderRequest> stakeholders
+    ) {
+        Project project = projectService.requireProject(id);
+        List<StakeholderRequest> toApply = stakeholders;
+        if (toApply == null || toApply.isEmpty()) {
+            ProjectResponse pr = projectService.get(id);
+            toApply = pr.stakeholders().stream()
+                    .map(s -> new StakeholderRequest(s.roleCode(), s.name(), s.email()))
+                    .toList();
+        }
+        try {
+            JsonNode result = agentRuntimeService.invokeConfigureStakeholders(
+                    project.getProjectName(),
+                    String.valueOf(id),
+                    toApply,
+                    "apply"
+            );
+            if (result != null) {
+                List<String> warnings = extractSodWarnings(result);
+                List<String> errors = extractErrors(result);
+                String nextCommand = result.path("nextCommand").asText("/plan-product-scope");
+                String status = result.path("status").asText("ok");
+                String message = result.path("message").asText("Stakeholders configured successfully.");
+                int configured = result.path("acceptedFileCount").asInt(toApply.size());
+
+                if (s3WorkspaceService.enabled() && result.has("overlayFiles")) {
+                    List<ZipPackageService.OverlayFile> overlayFiles = new ArrayList<>();
+                    for (JsonNode item : result.path("overlayFiles")) {
+                        String path = ZipPackageService.sanitizeOverlayPath(item.path("path").asText(""));
+                        if (path != null) {
+                            overlayFiles.add(new ZipPackageService.OverlayFile(path, item.path("content").asText("")));
+                        }
+                    }
+                    if (!overlayFiles.isEmpty()) {
+                        try {
+                            s3WorkspaceService.putCursorOverlay(project.getProjectName(), id, overlayFiles);
+                        } catch (Exception ex) {
+                            log.warn("S3 overlay write failed for configure-stakeholders: {}", ex.toString());
+                        }
+                    }
+                }
+                return new ConfigureStakeholdersResponse(status, message, nextCommand, warnings, errors, configured);
+            }
+        } catch (Exception ex) {
+            log.warn("Agent configure-stakeholders invocation failed: {}", ex.getMessage());
+            return new ConfigureStakeholdersResponse(
+                    "error",
+                    "Agent runtime call failed: " + ex.getMessage(),
+                    "/plan-product-scope",
+                    List.of(),
+                    List.of(ex.getMessage()),
+                    0
+            );
+        }
+        return new ConfigureStakeholdersResponse("ok", "Stakeholders configured.", "/plan-product-scope", List.of(), List.of(), toApply.size());
     }
 
     @GetMapping("/{id}")
@@ -267,5 +335,78 @@ public class ProjectController {
             return project.withWorkspace(null, null, null);
         }
         return project.withWorkspace(key, url, s3WorkspaceService.status(project.projectName(), project.id()));
+    }
+
+    private ProjectResponse applyStakeholderGovernance(ProjectResponse project, List<StakeholderRequest> stakeholders) {
+        if (stakeholders == null || stakeholders.isEmpty()) {
+            return project;
+        }
+        try {
+            JsonNode result = agentRuntimeService.invokeConfigureStakeholders(
+                    project.projectName(),
+                    String.valueOf(project.id()),
+                    stakeholders,
+                    "apply"
+            );
+            if (result != null) {
+                List<String> warnings = extractSodWarnings(result);
+                String nextCommand = result.path("nextCommand").asText("/plan-product-scope");
+
+                if (s3WorkspaceService.enabled() && result.has("overlayFiles")) {
+                    List<ZipPackageService.OverlayFile> overlayFiles = new ArrayList<>();
+                    for (JsonNode item : result.path("overlayFiles")) {
+                        String path = ZipPackageService.sanitizeOverlayPath(item.path("path").asText(""));
+                        if (path != null) {
+                            overlayFiles.add(new ZipPackageService.OverlayFile(path, item.path("content").asText("")));
+                        }
+                    }
+                    if (!overlayFiles.isEmpty()) {
+                        try {
+                            s3WorkspaceService.putCursorOverlay(project.projectName(), project.id(), overlayFiles);
+                        } catch (Exception ex) {
+                            log.warn("S3 overlay write failed for configure-stakeholders: {}", ex.toString());
+                        }
+                    }
+                }
+                return project.withGovernance(warnings, nextCommand);
+            }
+        } catch (Exception ex) {
+            log.warn("Agent configure-stakeholders invocation failed: {}", ex.getMessage());
+        }
+        return project;
+    }
+
+    static List<String> extractSodWarnings(JsonNode node) {
+        List<String> warnings = new ArrayList<>();
+        JsonNode list = node.path("sodWarnings");
+        if (list.isArray()) {
+            for (JsonNode item : list) {
+                if (item.isTextual()) {
+                    warnings.add(item.asText());
+                } else if (item.isObject()) {
+                    String reason = item.path("reason").asText("");
+                    String code = item.path("code").asText("");
+                    if (!reason.isBlank()) {
+                        warnings.add(reason);
+                    } else if (!code.isBlank()) {
+                        warnings.add(code);
+                    }
+                }
+            }
+        }
+        return warnings;
+    }
+
+    static List<String> extractErrors(JsonNode node) {
+        List<String> errors = new ArrayList<>();
+        JsonNode list = node.path("errors");
+        if (list.isArray()) {
+            for (JsonNode item : list) {
+                if (item.isTextual()) {
+                    errors.add(item.asText());
+                }
+            }
+        }
+        return errors;
     }
 }

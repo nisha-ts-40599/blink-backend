@@ -163,8 +163,13 @@ public class CanonicalSetupService {
         for (JsonNode assignment : context.path("stakeholderAssignments")) {
             String role = text(assignment, "roleId", "");
             String name = text(assignment, "personName", "");
+            String email = text(assignment, "personEmail", "");
             if (!role.isBlank() && !name.isBlank()) {
-                stakeholders.put(role, name);
+                if (!email.isBlank()) {
+                    stakeholders.put(role, name + " <" + email + ">");
+                } else {
+                    stakeholders.put(role, name);
+                }
             }
         }
 

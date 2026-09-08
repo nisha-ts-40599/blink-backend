@@ -35,23 +35,22 @@ npm run dev
 
 Open `http://127.0.0.1:5173`. `.env.development` already sets `VITE_API_URL=/api` so the wizard talks to local Java, not Render.
 
-### Local Worker (optional)
+### Local Python Agent Runtime (optional)
 
-The default `.env` points at the deployed Cloudflare Worker. To run grooming from the code on this machine:
+The backend defaults to the live AWS Lambda Agent Runtime (`https://z5i3yybrx1.execute-api.us-west-2.amazonaws.com`). To run the agent from code on this machine instead:
 
 ```powershell
-cd ..\..\Blink-Framework\automation_sdlc\services\agent-runtime
-Copy-Item .dev.vars.example .dev.vars
-# set LLM_API_KEY in .dev.vars
-npm install
-npm run dev
+cd ..\..\Blink-Framework\automation_sdlc\services\agent-runtime-python
+# install requirements
+pip install -r requirements.txt
+uvicorn app.main:app --port 8787
 ```
 
 Then in `blink-backend/.env`:
 
 ```
 BLINK_AGENT_RUNTIME_URL=http://127.0.0.1:8787
-BLINK_AGENT_RUNTIME_TOKEN=local-dev-token
+BLINK_AGENT_RUNTIME_TOKEN=blink-groom-2026
 ```
 
 Restart Java after changing `.env`.

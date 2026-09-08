@@ -234,7 +234,7 @@ public class ZipPackageService {
         }
     }
 
-    static String sanitizeOverlayPath(String path) {
+    public static String sanitizeOverlayPath(String path) {
         if (path == null || path.isBlank()) {
             return null;
         }

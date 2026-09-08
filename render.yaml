@@ -11,7 +11,7 @@ services:
       - key: DATABASE_URL
         sync: false
       - key: BLINK_AGENT_RUNTIME_URL
-        value: https://blink-agent-runtime.rushikesh-kate.workers.dev
+        value: https://z5i3yybrx1.execute-api.us-west-2.amazonaws.com
       - key: BLINK_AGENT_RUNTIME_TOKEN
         sync: false
       - key: BLINK_AUTOMATION_SDLC_GIT_URL
