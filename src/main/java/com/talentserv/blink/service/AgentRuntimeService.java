@@ -188,8 +188,11 @@ public class AgentRuntimeService {
         } catch (ApiException ex) {
             throw ex;
         } catch (IOException | IllegalArgumentException ex) {
-            log.warn("Agent runtime call failed: {}", ex.toString());
-            throw new ApiException(HttpStatus.BAD_GATEWAY, "Could not reach the Cloudflare agent runtime.");
+            log.warn("Agent runtime call failed for url={}: {}", url, ex.toString());
+            throw new ApiException(
+                    HttpStatus.BAD_GATEWAY,
+                    "Could not reach the agent runtime at " + url + ". Error: " + ex.getMessage()
+            );
         }
     }
 
