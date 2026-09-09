@@ -24,6 +24,8 @@ import org.springframework.web.multipart.MultipartFile;
 
 import com.talentserv.blink.domain.Project;
 import com.talentserv.blink.dto.ConfigureStakeholdersResponse;
+import com.talentserv.blink.dto.PlanProductScopeRequest;
+import com.talentserv.blink.dto.PlanProductScopeResponse;
 import com.talentserv.blink.dto.ProjectRequest;
 import com.talentserv.blink.dto.ProjectResponse;
 import com.talentserv.blink.dto.SetupAgentRequest;
@@ -33,6 +35,7 @@ import com.talentserv.blink.dto.WorkspaceInventoryResponse;
 import com.talentserv.blink.dto.WorkspaceStatusResponse;
 import com.talentserv.blink.service.AgentRuntimeService;
 import com.talentserv.blink.service.McpJsonWriter;
+import com.talentserv.blink.service.ProjectCodes;
 import com.talentserv.blink.service.ProjectService;
 import com.talentserv.blink.service.RequirementMarkdownService;
 import com.talentserv.blink.service.S3WorkspaceService;
@@ -174,6 +177,45 @@ public class ProjectController {
             );
         }
         return new ConfigureStakeholdersResponse("ok", "Stakeholders configured.", "/plan-product-scope", List.of(), List.of(), toApply.size());
+    }
+
+    @PostMapping("/{id}/plan-product-scope")
+    public PlanProductScopeResponse planProductScope(
+            @PathVariable Long id,
+            @Valid @RequestBody(required = false) PlanProductScopeRequest request
+    ) {
+        Project project = projectService.requireProject(id);
+        String reqText = (request != null && request.requirementText() != null && !request.requirementText().isBlank())
+                ? request.requirementText()
+                : project.getDescription();
+        String actor = (request != null && request.actor() != null) ? request.actor() : "operator";
+        String projectIdentifier = ProjectCodes.slug(project.getProjectName());
+        if (projectIdentifier.isBlank()) {
+            projectIdentifier = "P" + id;
+        }
+        return executePlanProductScope(project.getProjectName(), projectIdentifier, id, reqText, actor);
+    }
+
+    @PostMapping("/plan-product-scope")
+    public PlanProductScopeResponse planProductScopeStandalone(
+            @Valid @RequestBody PlanProductScopeRequest request
+    ) {
+        String projectName = request.projectName() != null && !request.projectName().isBlank() ? request.projectName() : "project";
+        Long projectId = null;
+        if (request.projectId() != null && !request.projectId().isBlank()) {
+            try {
+                projectId = Long.parseLong(request.projectId());
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        String projectIdentifier = request.projectId();
+        if (projectIdentifier == null || projectIdentifier.isBlank() || projectIdentifier.matches("\\d+")) {
+            projectIdentifier = ProjectCodes.slug(projectName);
+            if (projectIdentifier.isBlank()) {
+                projectIdentifier = projectId != null ? ("P" + projectId) : "PROJECT";
+            }
+        }
+        return executePlanProductScope(projectName, projectIdentifier, projectId, request.requirementText(), request.actor());
     }
 
     @GetMapping("/{id}")
@@ -395,6 +437,95 @@ public class ProjectController {
             }
         }
         return warnings;
+    }
+
+    private PlanProductScopeResponse executePlanProductScope(
+            String projectName,
+            String projectIdStr,
+            Long numericProjectId,
+            String requirementText,
+            String actor
+    ) {
+        try {
+            JsonNode result = agentRuntimeService.invokePlanProductScope(
+                    projectName,
+                    projectIdStr,
+                    requirementText,
+                    actor
+            );
+            if (result != null) {
+                String status = result.path("status").asText("ok");
+                String message = result.path("message").asText("Product scope planned successfully.");
+                String nextCommand = result.path("nextCommand").asText("/confirm-product-scope");
+                String proposalDigest = result.path("proposalDigest").asText(null);
+                List<String> epicIds = extractStringList(result.path("epicIds"));
+                List<String> storyIds = extractStringList(result.path("storyIds"));
+                JsonNode productScope = result.path("productScope");
+                List<String> errors = extractErrors(result);
+
+                if (numericProjectId != null && s3WorkspaceService.enabled() && result.has("overlayFiles")) {
+                    List<ZipPackageService.OverlayFile> overlayFiles = new ArrayList<>();
+                    for (JsonNode item : result.path("overlayFiles")) {
+                        String path = ZipPackageService.sanitizeOverlayPath(item.path("path").asText(""));
+                        if (path != null) {
+                            overlayFiles.add(new ZipPackageService.OverlayFile(path, item.path("content").asText("")));
+                        }
+                    }
+                    if (!overlayFiles.isEmpty()) {
+                        try {
+                            s3WorkspaceService.putCursorOverlay(projectName, numericProjectId, overlayFiles);
+                        } catch (Exception ex) {
+                            log.warn("S3 overlay write failed for plan-product-scope: {}", ex.toString());
+                        }
+                    }
+                }
+
+                return new PlanProductScopeResponse(
+                        status,
+                        message,
+                        nextCommand,
+                        proposalDigest,
+                        epicIds,
+                        storyIds,
+                        productScope,
+                        errors
+                );
+            }
+        } catch (Exception ex) {
+            log.warn("Agent plan-product-scope invocation failed: {}", ex.getMessage());
+            return new PlanProductScopeResponse(
+                    "error",
+                    "Agent runtime call failed: " + ex.getMessage(),
+                    "/confirm-product-scope",
+                    null,
+                    List.of(),
+                    List.of(),
+                    null,
+                    List.of(ex.getMessage())
+            );
+        }
+        return new PlanProductScopeResponse(
+                "error",
+                "No response from agent runtime.",
+                "/confirm-product-scope",
+                null,
+                List.of(),
+                List.of(),
+                null,
+                List.of("NO_RESPONSE")
+        );
+    }
+
+    static List<String> extractStringList(JsonNode node) {
+        List<String> list = new ArrayList<>();
+        if (node != null && node.isArray()) {
+            for (JsonNode item : node) {
+                if (item.isTextual() && !item.asText().isBlank()) {
+                    list.add(item.asText());
+                }
+            }
+        }
+        return list;
     }
 
     static List<String> extractErrors(JsonNode node) {

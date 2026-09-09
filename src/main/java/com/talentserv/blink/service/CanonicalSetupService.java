@@ -138,7 +138,13 @@ public class CanonicalSetupService {
             throw new ApiException(HttpStatus.BAD_REQUEST, "Add a requirement or project description before setup.");
         }
         ObjectNode payload = MAPPER.createObjectNode();
-        payload.put("projectId", project.getId() == null ? "" : String.valueOf(project.getId()));
+        String projectCode = ProjectCodes.slug(project.getProjectName());
+        if (projectCode.isBlank()) {
+            projectCode = project.getId() == null ? "PROJECT" : ("P" + project.getId());
+        }
+        payload.put("projectId", projectCode);
+        payload.put("projectCode", projectCode);
+        payload.put("numericProjectId", project.getId() == null ? "" : String.valueOf(project.getId()));
         payload.put("projectName", project.getProjectName().trim());
         if (requirement != null) {
             payload.put("requirementText", requirement);

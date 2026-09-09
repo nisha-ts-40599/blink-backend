@@ -16,6 +16,8 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import com.talentserv.blink.config.BlinkProperties;
 import com.talentserv.blink.domain.Project;
 import com.talentserv.blink.dto.ConfigureStakeholdersResponse;
+import com.talentserv.blink.dto.PlanProductScopeRequest;
+import com.talentserv.blink.dto.PlanProductScopeResponse;
 import com.talentserv.blink.dto.ProjectRequest;
 import com.talentserv.blink.dto.ProjectResponse;
 import com.talentserv.blink.dto.StakeholderRequest;
@@ -137,5 +139,37 @@ class ProjectControllerStakeholdersTest {
         assertThat(res.status()).isEqualTo("ok");
         assertThat(res.nextCommand()).isEqualTo("/plan-product-scope");
         assertThat(res.rolesConfigured()).isEqualTo(2);
+    }
+
+    @Test
+    void planProductScopeEndpointExecutesSuccessfully() {
+        Project project = new Project();
+        project.setId(20L);
+        project.setProjectName("Fitoyo");
+        project.setDescription("Fitoyo fitness platform");
+        when(projectService.requireProject(20L)).thenReturn(project);
+
+        ObjectNode agentResponse = MAPPER.createObjectNode();
+        agentResponse.put("status", "ok");
+        agentResponse.put("command", "plan-product-scope");
+        agentResponse.put("nextCommand", "/confirm-product-scope");
+        agentResponse.put("proposalDigest", "sha256-test-digest");
+        ArrayNode epics = agentResponse.putArray("epicIds");
+        epics.add("FITOYO-EPIC-01");
+        ArrayNode stories = agentResponse.putArray("storyIds");
+        stories.add("FITOYO-STORY-01");
+        stories.add("FITOYO-STORY-02");
+
+        when(agentRuntimeService.invokePlanProductScope(eq("Fitoyo"), eq("FITOYO"), eq("Fitoyo fitness platform"), eq("operator")))
+                .thenReturn(agentResponse);
+
+        PlanProductScopeRequest req = new PlanProductScopeRequest("Fitoyo", "20", "Fitoyo fitness platform", "operator");
+        PlanProductScopeResponse res = controller.planProductScope(20L, req);
+
+        assertThat(res.status()).isEqualTo("ok");
+        assertThat(res.nextCommand()).isEqualTo("/confirm-product-scope");
+        assertThat(res.proposalDigest()).isEqualTo("sha256-test-digest");
+        assertThat(res.epicIds()).containsExactly("FITOYO-EPIC-01");
+        assertThat(res.storyIds()).containsExactly("FITOYO-STORY-01", "FITOYO-STORY-02");
     }
 }

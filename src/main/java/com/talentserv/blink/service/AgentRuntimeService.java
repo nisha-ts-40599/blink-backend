@@ -148,6 +148,27 @@ public class AgentRuntimeService {
         return invoke(payload);
     }
 
+    public JsonNode invokePlanProductScope(
+            String projectName,
+            String projectId,
+            String requirementText,
+            String actor
+    ) {
+        ObjectNode payload = MAPPER.createObjectNode();
+        payload.put("command", "plan-product-scope");
+        payload.put("projectName", projectName == null ? "" : projectName);
+        if (projectId != null && !projectId.isBlank()) {
+            payload.put("projectId", projectId);
+        }
+        if (requirementText != null && !requirementText.isBlank()) {
+            payload.put("requirementText", requirementText.trim());
+        }
+        if (actor != null && !actor.isBlank()) {
+            payload.put("actor", actor.trim());
+        }
+        return invoke(payload);
+    }
+
     public JsonNode invoke(JsonNode body) {
         return invoke(body, null);
     }
