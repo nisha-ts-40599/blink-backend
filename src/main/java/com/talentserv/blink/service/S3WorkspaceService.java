@@ -351,6 +351,20 @@ public class S3WorkspaceService {
         putBytes(WorkspaceNames.key(projectName, projectId, "requirement.md"), body.getBytes(StandardCharsets.UTF_8), "text/markdown");
     }
 
+    public void putRequirementAsync(String projectName, Long projectId, String markdown) {
+        if (!enabled() || projectName == null || projectName.isBlank()) {
+            return;
+        }
+        uploads.submit(() -> {
+            try {
+                putRequirement(projectName, projectId, markdown);
+                log.info("Asynchronous S3 requirement write completed for project={}", projectName);
+            } catch (Exception ex) {
+                log.warn("Asynchronous S3 requirement write failed for project={}: {}", projectName, ex.toString());
+            }
+        });
+    }
+
     public void putCursorOverlay(String projectName, List<ZipPackageService.OverlayFile> overlayFiles) {
         putCursorOverlay(projectName, null, overlayFiles);
     }
@@ -376,6 +390,20 @@ public class S3WorkspaceService {
         if (!wrote) {
             putBytes(WorkspaceNames.key(projectName, projectId, ".cursor/.keep"), new byte[0], "application/octet-stream");
         }
+    }
+
+    public void putCursorOverlayAsync(String projectName, Long projectId, List<ZipPackageService.OverlayFile> overlayFiles) {
+        if (!enabled() || overlayFiles == null || overlayFiles.isEmpty()) {
+            return;
+        }
+        uploads.submit(() -> {
+            try {
+                putCursorOverlay(projectName, projectId, overlayFiles);
+                log.info("Asynchronous S3 overlay write completed for project={} files={}", projectName, overlayFiles.size());
+            } catch (Exception ex) {
+                log.warn("Asynchronous S3 overlay write failed for project={}: {}", projectName, ex.toString());
+            }
+        });
     }
 
     public ZipPackageService.WorkspaceBundle zipWorkspace(String projectName) {

@@ -28,6 +28,9 @@ public class ProjectGovernanceService {
     private final AgentRuntimeService agentRuntimeService;
     private final S3WorkspaceService s3WorkspaceService;
     private final ProjectService projectService;
+    private final java.util.concurrent.ConcurrentHashMap<String, CachedGovernance> governanceCache = new java.util.concurrent.ConcurrentHashMap<>();
+
+    private record CachedGovernance(List<String> warnings, String nextCommand) {}
 
     public ProjectGovernanceService(
             AgentRuntimeService agentRuntimeService,
@@ -39,9 +42,28 @@ public class ProjectGovernanceService {
         this.projectService = projectService;
     }
 
+    private String computeCacheKey(Long projectId, List<StakeholderRequest> stakeholders) {
+        if (projectId == null || stakeholders == null) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder(String.valueOf(projectId)).append(":");
+        for (StakeholderRequest s : stakeholders) {
+            if (s != null) {
+                sb.append(s.roleCode()).append("=").append(s.name()).append("<").append(s.email()).append(">;");
+            }
+        }
+        return sb.toString();
+    }
+
     public ProjectResponse applyStakeholderGovernance(ProjectResponse project, List<StakeholderRequest> stakeholders) {
         if (stakeholders == null || stakeholders.isEmpty()) {
             return project;
+        }
+        String cacheKey = computeCacheKey(project.id(), stakeholders);
+        CachedGovernance cached = governanceCache.get(cacheKey);
+        if (cached != null) {
+            log.info("Reusing cached stakeholder governance for projectId={} (no remote agent call needed)", project.id());
+            return project.withGovernance(cached.warnings(), cached.nextCommand());
         }
         try {
             JsonNode result = agentRuntimeService.invokeConfigureStakeholders(
@@ -53,6 +75,7 @@ public class ProjectGovernanceService {
             if (result != null) {
                 List<String> warnings = extractSodWarnings(result);
                 String nextCommand = result.path("nextCommand").asText("/plan-product-scope");
+                governanceCache.put(cacheKey, new CachedGovernance(warnings, nextCommand));
                 persistOverlayFiles(project.projectName(), project.id(), result, "configure-stakeholders");
                 return project.withGovernance(warnings, nextCommand);
             }
@@ -71,6 +94,19 @@ public class ProjectGovernanceService {
                     .map(s -> new StakeholderRequest(s.roleCode(), s.name(), s.email()))
                     .toList();
         }
+        String cacheKey = computeCacheKey(id, toApply);
+        CachedGovernance cached = governanceCache.get(cacheKey);
+        if (cached != null) {
+            log.info("Reusing cached stakeholder governance for projectId={} (no remote agent call needed)", id);
+            return new ConfigureStakeholdersResponse(
+                    "ok",
+                    "Stakeholders already configured.",
+                    cached.nextCommand(),
+                    cached.warnings(),
+                    List.of(),
+                    toApply.size()
+            );
+        }
         try {
             JsonNode result = agentRuntimeService.invokeConfigureStakeholders(
                     project.getProjectName(),
@@ -86,6 +122,7 @@ public class ProjectGovernanceService {
                 String message = result.path("message").asText("Stakeholders configured successfully.");
                 int configured = result.path("acceptedFileCount").asInt(toApply.size());
 
+                governanceCache.put(cacheKey, new CachedGovernance(warnings, nextCommand));
                 persistOverlayFiles(project.getProjectName(), id, result, "configure-stakeholders");
                 return new ConfigureStakeholdersResponse(status, message, nextCommand, warnings, errors, configured);
             }
@@ -211,11 +248,7 @@ public class ProjectGovernanceService {
             }
         }
         if (!overlayFiles.isEmpty()) {
-            try {
-                s3WorkspaceService.putCursorOverlay(projectName, projectId, overlayFiles);
-            } catch (Exception ex) {
-                log.warn("S3 overlay write failed for {}: {}", context, ex.toString());
-            }
+            s3WorkspaceService.putCursorOverlayAsync(projectName, projectId, overlayFiles);
         }
     }
 

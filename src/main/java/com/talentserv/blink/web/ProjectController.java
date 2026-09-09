@@ -163,15 +163,11 @@ public class ProjectController {
         if (s3WorkspaceService.enabled()) {
             Project project = projectService.requireProject(id);
             s3WorkspaceService.provisionAsync(project.getProjectName(), id);
-            try {
-                s3WorkspaceService.putCursorOverlay(
-                        project.getProjectName(),
-                        id,
-                        SetupAgentService.overlayFilesFromResponse(response)
-                );
-            } catch (Exception ex) {
-                log.warn("S3 overlay write failed during setup: {}", ex.toString());
-            }
+            s3WorkspaceService.putCursorOverlayAsync(
+                    project.getProjectName(),
+                    id,
+                    SetupAgentService.overlayFilesFromResponse(response)
+            );
         }
         return response;
     }
@@ -206,15 +202,10 @@ public class ProjectController {
         );
         ZipPackageService.WorkspaceBundle bundle;
         if (s3WorkspaceService.enabled()) {
-            log.info("Download writing requirement and .cursor overlay to S3 without waiting for template copy");
+            log.info("Download writing requirement and .cursor overlay to S3 asynchronously without waiting for template copy");
             s3WorkspaceService.provisionAsync(project.getProjectName(), id);
-            try {
-                s3WorkspaceService.putRequirement(project.getProjectName(), id, markdown);
-                s3WorkspaceService.putCursorOverlay(project.getProjectName(), id, overlay);
-                log.info("Download S3 overlay written elapsedMs={}", System.currentTimeMillis() - started);
-            } catch (Exception ex) {
-                log.warn("Download S3 overlay failed, continuing with local zip: {}", ex.toString());
-            }
+            s3WorkspaceService.putRequirementAsync(project.getProjectName(), id, markdown);
+            s3WorkspaceService.putCursorOverlayAsync(project.getProjectName(), id, overlay);
         }
         log.info("Download packaging zip from local automation_sdlc");
         bundle = zipPackageService.packageWorkspace(
