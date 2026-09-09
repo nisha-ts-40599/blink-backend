@@ -140,7 +140,7 @@ public class CanonicalSetupService {
         ObjectNode payload = MAPPER.createObjectNode();
         String projectCode = ProjectCodes.slug(project.getProjectName());
         if (projectCode.isBlank()) {
-            projectCode = project.getId() == null ? "PROJECT" : ("P" + project.getId());
+            projectCode = "PROJECT";
         }
         payload.put("projectId", projectCode);
         payload.put("projectCode", projectCode);

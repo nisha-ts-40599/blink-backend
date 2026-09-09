@@ -23,6 +23,7 @@ import com.talentserv.blink.dto.ProjectResponse;
 import com.talentserv.blink.dto.StakeholderRequest;
 import com.talentserv.blink.dto.StakeholderResponse;
 import com.talentserv.blink.service.AgentRuntimeService;
+import com.talentserv.blink.service.ProjectGovernanceService;
 import com.talentserv.blink.service.ProjectService;
 import com.talentserv.blink.service.RequirementMarkdownService;
 import com.talentserv.blink.service.S3WorkspaceService;
@@ -52,11 +53,13 @@ class ProjectControllerStakeholdersTest {
     private AgentRuntimeService agentRuntimeService;
 
     private BlinkProperties properties;
+    private ProjectGovernanceService projectGovernanceService;
     private ProjectController controller;
 
     @BeforeEach
     void setUp() {
         properties = new BlinkProperties();
+        projectGovernanceService = new ProjectGovernanceService(agentRuntimeService, s3WorkspaceService, projectService);
         controller = new ProjectController(
                 projectService,
                 requirementMarkdownService,
@@ -64,6 +67,7 @@ class ProjectControllerStakeholdersTest {
                 setupAgentService,
                 s3WorkspaceService,
                 agentRuntimeService,
+                projectGovernanceService,
                 properties
         );
     }
