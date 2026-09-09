@@ -23,13 +23,20 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
 import com.talentserv.blink.domain.Project;
+import com.talentserv.blink.dto.ConfigureStakeholdersResponse;
+import com.talentserv.blink.dto.PlanProductScopeRequest;
+import com.talentserv.blink.dto.PlanProductScopeResponse;
 import com.talentserv.blink.dto.ProjectRequest;
 import com.talentserv.blink.dto.ProjectResponse;
 import com.talentserv.blink.dto.SetupAgentRequest;
 import com.talentserv.blink.dto.SetupAgentResponse;
+import com.talentserv.blink.dto.StakeholderRequest;
 import com.talentserv.blink.dto.WorkspaceInventoryResponse;
 import com.talentserv.blink.dto.WorkspaceStatusResponse;
+import com.talentserv.blink.service.AgentRuntimeService;
 import com.talentserv.blink.service.McpJsonWriter;
+import com.talentserv.blink.service.ProjectCodes;
+import com.talentserv.blink.service.ProjectGovernanceService;
 import com.talentserv.blink.service.ProjectService;
 import com.talentserv.blink.service.RequirementMarkdownService;
 import com.talentserv.blink.service.S3WorkspaceService;
@@ -55,6 +62,8 @@ public class ProjectController {
     private final ZipPackageService zipPackageService;
     private final SetupAgentService setupAgentService;
     private final S3WorkspaceService s3WorkspaceService;
+    private final AgentRuntimeService agentRuntimeService;
+    private final ProjectGovernanceService projectGovernanceService;
     private final BlinkProperties properties;
 
     public ProjectController(
@@ -63,6 +72,8 @@ public class ProjectController {
             ZipPackageService zipPackageService,
             SetupAgentService setupAgentService,
             S3WorkspaceService s3WorkspaceService,
+            AgentRuntimeService agentRuntimeService,
+            ProjectGovernanceService projectGovernanceService,
             BlinkProperties properties
     ) {
         this.projectService = projectService;
@@ -70,6 +81,8 @@ public class ProjectController {
         this.zipPackageService = zipPackageService;
         this.setupAgentService = setupAgentService;
         this.s3WorkspaceService = s3WorkspaceService;
+        this.agentRuntimeService = agentRuntimeService;
+        this.projectGovernanceService = projectGovernanceService;
         this.properties = properties;
     }
 
@@ -100,12 +113,37 @@ public class ProjectController {
 
     @PostMapping
     public ProjectResponse create(@Valid @RequestBody ProjectRequest request) {
-        return attachWorkspace(projectService.create(request), true);
+        ProjectResponse created = attachWorkspace(projectService.create(request), true);
+        return projectGovernanceService.applyStakeholderGovernance(created, request.stakeholders());
     }
 
     @PutMapping("/{id}")
     public ProjectResponse update(@PathVariable Long id, @Valid @RequestBody ProjectRequest request) {
-        return attachWorkspace(projectService.update(id, request), true);
+        ProjectResponse updated = attachWorkspace(projectService.update(id, request), true);
+        return projectGovernanceService.applyStakeholderGovernance(updated, request.stakeholders());
+    }
+
+    @PostMapping("/{id}/configure-stakeholders")
+    public ConfigureStakeholdersResponse configureStakeholders(
+            @PathVariable Long id,
+            @RequestBody(required = false) List<StakeholderRequest> stakeholders
+    ) {
+        return projectGovernanceService.configureStakeholders(id, stakeholders);
+    }
+
+    @PostMapping("/{id}/plan-product-scope")
+    public PlanProductScopeResponse planProductScope(
+            @PathVariable Long id,
+            @Valid @RequestBody(required = false) PlanProductScopeRequest request
+    ) {
+        return projectGovernanceService.planProductScope(id, request);
+    }
+
+    @PostMapping("/plan-product-scope")
+    public PlanProductScopeResponse planProductScopeStandalone(
+            @Valid @RequestBody PlanProductScopeRequest request
+    ) {
+        return projectGovernanceService.planProductScopeStandalone(request);
     }
 
     @GetMapping("/{id}")
@@ -125,15 +163,11 @@ public class ProjectController {
         if (s3WorkspaceService.enabled()) {
             Project project = projectService.requireProject(id);
             s3WorkspaceService.provisionAsync(project.getProjectName(), id);
-            try {
-                s3WorkspaceService.putCursorOverlay(
-                        project.getProjectName(),
-                        id,
-                        SetupAgentService.overlayFilesFromResponse(response)
-                );
-            } catch (Exception ex) {
-                log.warn("S3 overlay write failed during setup: {}", ex.toString());
-            }
+            s3WorkspaceService.putCursorOverlayAsync(
+                    project.getProjectName(),
+                    id,
+                    SetupAgentService.overlayFilesFromResponse(response)
+            );
         }
         return response;
     }
@@ -168,15 +202,10 @@ public class ProjectController {
         );
         ZipPackageService.WorkspaceBundle bundle;
         if (s3WorkspaceService.enabled()) {
-            log.info("Download writing requirement and .cursor overlay to S3 without waiting for template copy");
+            log.info("Download writing requirement and .cursor overlay to S3 asynchronously without waiting for template copy");
             s3WorkspaceService.provisionAsync(project.getProjectName(), id);
-            try {
-                s3WorkspaceService.putRequirement(project.getProjectName(), id, markdown);
-                s3WorkspaceService.putCursorOverlay(project.getProjectName(), id, overlay);
-                log.info("Download S3 overlay written elapsedMs={}", System.currentTimeMillis() - started);
-            } catch (Exception ex) {
-                log.warn("Download S3 overlay failed, continuing with local zip: {}", ex.toString());
-            }
+            s3WorkspaceService.putRequirementAsync(project.getProjectName(), id, markdown);
+            s3WorkspaceService.putCursorOverlayAsync(project.getProjectName(), id, overlay);
         }
         log.info("Download packaging zip from local automation_sdlc");
         bundle = zipPackageService.packageWorkspace(

@@ -11,6 +11,6 @@ public record GroomClarifyRequest(
         String requirementText,
         @Size(max = 255) String projectName,
         @Size(max = 64) String projectId,
-        @Size(max = 60) List<@Valid GroomAnswerRequest> answers
+        @Size(max = 100) List<@Valid GroomAnswerRequest> answers
 ) {
 }

@@ -2,6 +2,7 @@ package com.talentserv.blink.service;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 import org.apache.hc.client5.http.classic.methods.HttpPost;
 import org.apache.hc.client5.http.config.ConnectionConfig;
@@ -21,11 +22,13 @@ import org.springframework.stereotype.Service;
 import com.talentserv.blink.config.BlinkProperties;
 import com.talentserv.blink.dto.GroomAnswerRequest;
 import com.talentserv.blink.dto.GroomClarifyRequest;
+import com.talentserv.blink.dto.StakeholderRequest;
 import com.talentserv.blink.error.ApiException;
 
 import jakarta.annotation.PreDestroy;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
 
 @Service
@@ -117,6 +120,53 @@ public class AgentRuntimeService {
             payload.put("projectDescription", projectDescription.trim());
         }
         return invoke(payload, responseTimeout);
+    }
+
+    public JsonNode invokeConfigureStakeholders(
+            String projectName,
+            String projectId,
+            List<StakeholderRequest> stakeholders,
+            String mode
+    ) {
+        ObjectNode payload = MAPPER.createObjectNode();
+        payload.put("command", "configure-stakeholders");
+        payload.put("mode", mode == null || mode.isBlank() ? "apply" : mode);
+        payload.put("projectName", projectName == null ? "" : projectName);
+        if (projectId != null && !projectId.isBlank()) {
+            payload.put("projectId", projectId);
+        }
+        if (stakeholders != null && !stakeholders.isEmpty()) {
+            ArrayNode rows = payload.putArray("stakeholders");
+            for (StakeholderRequest s : stakeholders) {
+                if (s == null) continue;
+                ObjectNode row = rows.addObject();
+                row.put("role_id", s.roleCode() == null ? "" : s.roleCode().trim());
+                row.put("name", s.name() == null ? "" : s.name().trim());
+                row.put("email", s.email() == null ? "" : s.email().trim());
+            }
+        }
+        return invoke(payload);
+    }
+
+    public JsonNode invokePlanProductScope(
+            String projectName,
+            String projectId,
+            String requirementText,
+            String actor
+    ) {
+        ObjectNode payload = MAPPER.createObjectNode();
+        payload.put("command", "plan-product-scope");
+        payload.put("projectName", projectName == null ? "" : projectName);
+        if (projectId != null && !projectId.isBlank()) {
+            payload.put("projectId", projectId);
+        }
+        if (requirementText != null && !requirementText.isBlank()) {
+            payload.put("requirementText", requirementText.trim());
+        }
+        if (actor != null && !actor.isBlank()) {
+            payload.put("actor", actor.trim());
+        }
+        return invoke(payload);
     }
 
     public JsonNode invoke(JsonNode body) {
