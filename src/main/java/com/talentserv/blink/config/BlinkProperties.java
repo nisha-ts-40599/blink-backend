@@ -61,8 +61,15 @@ public class BlinkProperties {
      */
     private String jiraClientId = "";
     private String jiraClientSecret = "";
-    private String jiraRedirectUri = "http://localhost:5173/api/integrations/jira/oauth/callback";
+    private String jiraRedirectUri = "";
     private String jiraScopes = "read:jira-work write:jira-work read:jira-user read:me offline_access";
+    /**
+     * GitHub OAuth App credentials. Users sign in on Blink; PAT goes in the zip .env later.
+     */
+    private String githubClientId = "";
+    private String githubClientSecret = "";
+    private String githubRedirectUri = "";
+    private String githubScopes = "repo read:org user:email";
     /**
      * Passphrase used to derive the AES key for per-project GitHub/Jira tokens.
      */
@@ -218,6 +225,38 @@ public class BlinkProperties {
 
     public void setJiraScopes(String jiraScopes) {
         this.jiraScopes = jiraScopes;
+    }
+
+    public String getGithubClientId() {
+        return githubClientId;
+    }
+
+    public void setGithubClientId(String githubClientId) {
+        this.githubClientId = githubClientId;
+    }
+
+    public String getGithubClientSecret() {
+        return githubClientSecret;
+    }
+
+    public void setGithubClientSecret(String githubClientSecret) {
+        this.githubClientSecret = githubClientSecret;
+    }
+
+    public String getGithubRedirectUri() {
+        return githubRedirectUri;
+    }
+
+    public void setGithubRedirectUri(String githubRedirectUri) {
+        this.githubRedirectUri = githubRedirectUri;
+    }
+
+    public String getGithubScopes() {
+        return githubScopes;
+    }
+
+    public void setGithubScopes(String githubScopes) {
+        this.githubScopes = githubScopes;
     }
 
     public String getIntegrationSecretKey() {

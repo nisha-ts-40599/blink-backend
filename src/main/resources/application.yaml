@@ -1,5 +1,6 @@
 server:
   port: ${PORT:8090}
+  forward-headers-strategy: framework
 
 spring:
   application:
@@ -59,7 +60,11 @@ blink:
   canonical-setup-timeout: ${BLINK_CANONICAL_SETUP_TIMEOUT:90s}
   jira-client-id: ${BLINK_JIRA_CLIENT_ID:}
   jira-client-secret: ${BLINK_JIRA_CLIENT_SECRET:}
-  jira-redirect-uri: ${BLINK_JIRA_REDIRECT_URI:http://localhost:5173/api/integrations/jira/oauth/callback}
+  jira-redirect-uri: ${BLINK_JIRA_REDIRECT_URI:}
   jira-scopes: ${BLINK_JIRA_SCOPES:read:jira-work write:jira-work read:jira-user read:me offline_access}
+  github-client-id: ${BLINK_GITHUB_CLIENT_ID:}
+  github-client-secret: ${BLINK_GITHUB_CLIENT_SECRET:}
+  github-redirect-uri: ${BLINK_GITHUB_REDIRECT_URI:}
+  github-scopes: "${BLINK_GITHUB_SCOPES:repo read:org user:email}"
   integration-secret-key: ${BLINK_INTEGRATION_SECRET_KEY:}
 

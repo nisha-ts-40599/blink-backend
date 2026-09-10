@@ -162,6 +162,105 @@ class IntegrationConnectServiceTest {
     }
 
     @Test
+    void githubOAuthUrlUnconfiguredWithoutClientId() {
+        var urlResponse = service.getGithubOAuthUrl();
+        assertThat(urlResponse.configured()).isFalse();
+        assertThat(urlResponse.url()).isNull();
+    }
+
+    @Test
+    void githubOAuthUrlConfiguredWhenClientIdPresent() {
+        var props = new com.talentserv.blink.config.BlinkProperties();
+        props.setGithubClientId("Ov23liTestClient");
+        props.setGithubClientSecret("github-secret");
+        var oauthService = new IntegrationConnectService(new IntegrationHttpGateway() {
+            @Override
+            public IntegrationHttpResponse get(String url, Map<String, String> headers) {
+                return new IntegrationHttpResponse(200, "{}");
+            }
+        }, props);
+
+        var urlResponse = oauthService.getGithubOAuthUrl(
+                "https://blink-backend-af7x.onrender.com/api/integrations/github/oauth/callback",
+                "https://blink-backend-af7x.onrender.com"
+        );
+        assertThat(urlResponse.configured()).isTrue();
+        assertThat(urlResponse.url()).contains("https://github.com/login/oauth/authorize");
+        assertThat(urlResponse.url()).contains("client_id=Ov23liTestClient");
+        assertThat(urlResponse.url()).contains("scope=");
+        assertThat(urlResponse.redirectUri())
+                .isEqualTo("https://blink-backend-af7x.onrender.com/api/integrations/github/oauth/callback");
+        assertThat(urlResponse.url()).contains("blink-backend-af7x.onrender.com");
+        assertThat(urlResponse.url()).doesNotContain("localhost");
+    }
+
+    @Test
+    void githubOAuthExchangeSuccess() {
+        var props = new com.talentserv.blink.config.BlinkProperties();
+        props.setGithubClientId("github-client");
+        props.setGithubClientSecret("github-secret");
+        props.setGithubRedirectUri("http://localhost:5173/api/integrations/github/oauth/callback");
+        MemoryProjectIntegrationStore store = new MemoryProjectIntegrationStore();
+        var oauthService = new IntegrationConnectService(new IntegrationHttpGateway() {
+            @Override
+            public IntegrationHttpResponse get(String url, Map<String, String> headers) {
+                if (url.contains("api.github.com/user")) {
+                    return json(200, "{\"login\":\"octocat\",\"name\":\"The Octocat\"}");
+                }
+                if (url.contains("api.github.com/orgs/acme")) {
+                    return json(200, "{\"login\":\"acme\"}");
+                }
+                return new IntegrationHttpResponse(404, "");
+            }
+
+            @Override
+            public IntegrationHttpResponse post(String url, Map<String, String> headers, String jsonBody) {
+                if (url.contains("github.com/login/oauth/access_token")) {
+                    return json(200, "{\"access_token\":\"gho_oauth_token\",\"token_type\":\"bearer\",\"scope\":\"repo,read:org\"}");
+                }
+                return new IntegrationHttpResponse(404, "");
+            }
+        }, props, store);
+
+        var exchangeRes = oauthService.exchangeGithubOAuth(
+                new com.talentserv.blink.dto.GithubOAuthExchangeRequest("auth_code_gh", null, "42", "acme")
+        );
+
+        assertThat(exchangeRes.connected()).isTrue();
+        assertThat(exchangeRes.account()).isEqualTo("octocat");
+        assertThat(exchangeRes.authType()).isEqualTo("oauth");
+        assertThat(exchangeRes.token()).isNull();
+        assertThat(exchangeRes.detail()).contains("acme");
+        assertThat(store.find(42L, "github").orElseThrow().accessToken()).isEqualTo("gho_oauth_token");
+        assertThat(store.find(42L, "github").orElseThrow().authType()).isEqualTo("oauth");
+        assertThat(store.find(42L, "github").orElseThrow().organization()).isEqualTo("acme");
+    }
+
+    @Test
+    void githubOAuthExchangeRejectsMissingAccessToken() {
+        var props = new com.talentserv.blink.config.BlinkProperties();
+        props.setGithubClientId("github-client");
+        props.setGithubClientSecret("github-secret");
+        var oauthService = new IntegrationConnectService(new IntegrationHttpGateway() {
+            @Override
+            public IntegrationHttpResponse get(String url, Map<String, String> headers) {
+                return new IntegrationHttpResponse(404, "");
+            }
+
+            @Override
+            public IntegrationHttpResponse post(String url, Map<String, String> headers, String jsonBody) {
+                return json(200, "{\"error\":\"bad_verification_code\",\"error_description\":\"The code passed is incorrect or expired.\"}");
+            }
+        }, props);
+
+        assertThatThrownBy(() -> oauthService.exchangeGithubOAuth(
+                new com.talentserv.blink.dto.GithubOAuthExchangeRequest("bad_code", null, null, null)
+        ))
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("incorrect or expired");
+    }
+
+    @Test
     void jiraOAuthExchangeSuccess() {
         var props = new com.talentserv.blink.config.BlinkProperties();
         props.setJiraClientId("my-client-id");

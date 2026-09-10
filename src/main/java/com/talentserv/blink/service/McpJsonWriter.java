@@ -150,7 +150,9 @@ public final class McpJsonWriter {
                 ## First-time setup (2 minutes)
 
                 1. Unzip and **open the `*_workspace` folder** in Cursor (File → Open Folder).
-                2. Copy env file and fill **tokens** (URLs/emails may already be filled from Blink):
+                2. Copy env file and fill **tokens** (URLs/emails may already be filled from Blink).
+           GitHub MCP needs `GITHUB_PERSONAL_ACCESS_TOKEN` in `.env.mcp` — signing in on Blink
+           does not write that token into the zip.
 
                 **Windows**
                 ```powershell
@@ -189,6 +191,7 @@ public final class McpJsonWriter {
         out.append("# Cursor mcp.json keeps secrets as ${env:VAR}; fill token values here.\n");
         out.append("# Non-secret URLs/emails may be pre-filled from the Blink wizard.\n\n");
         if (providers.contains("github")) {
+            out.append("# After unzip: paste a GitHub PAT here for Cursor MCP (Blink login does not copy it).\n");
             out.append("GITHUB_PERSONAL_ACCESS_TOKEN=\n\n");
         }
         if (providers.contains("jira")) {
