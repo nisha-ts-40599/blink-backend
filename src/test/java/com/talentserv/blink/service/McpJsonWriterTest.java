@@ -49,6 +49,7 @@ class McpJsonWriterTest {
     void setupReadmeExplainsWrapperAndEnvMcp() {
         String readme = McpJsonWriter.setupReadme();
         assertThat(readme).contains("mcp.windows.json", ".env.mcp", "mcp-npx.ps1", "mcp-npx.sh");
+        assertThat(readme).contains("GITHUB_PERSONAL_ACCESS_TOKEN");
     }
 
     @Test
@@ -63,6 +64,7 @@ class McpJsonWriterTest {
                 )
         );
         assertThat(example).contains("GITHUB_PERSONAL_ACCESS_TOKEN=");
+        assertThat(example).contains("Blink login does not copy it");
         assertThat(example).contains("JIRA_URL=https://acme.atlassian.net");
         assertThat(example).contains("JIRA_USERNAME=dev@acme.com");
         assertThat(example).contains("JIRA_API_TOKEN=");

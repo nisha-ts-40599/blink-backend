@@ -37,6 +37,8 @@ import com.talentserv.blink.dto.JiraCreateIssuesRequest;
 import com.talentserv.blink.dto.JiraCreateIssuesResponse;
 import com.talentserv.blink.dto.JiraCreatedIssue;
 import com.talentserv.blink.dto.JiraEpicSpec;
+import com.talentserv.blink.dto.GithubOAuthExchangeRequest;
+import com.talentserv.blink.dto.GithubOAuthUrlResponse;
 import com.talentserv.blink.dto.JiraOAuthExchangeRequest;
 import com.talentserv.blink.dto.JiraOAuthUrlResponse;
 import com.talentserv.blink.dto.JiraProjectDto;
@@ -103,7 +105,102 @@ public class IntegrationConnectService {
         return redact(result);
     }
 
+    public GithubOAuthUrlResponse getGithubOAuthUrl() {
+        return getGithubOAuthUrl(null, null);
+    }
+
+    public GithubOAuthUrlResponse getGithubOAuthUrl(String requestedRedirectUri, String publicApiBase) {
+        String clientId = properties.getGithubClientId() == null ? "" : properties.getGithubClientId().trim();
+        if (clientId.isBlank()) {
+            return new GithubOAuthUrlResponse(
+                    false,
+                    null,
+                    null,
+                    null,
+                    "GitHub OAuth is not configured. Set BLINK_GITHUB_CLIENT_ID and BLINK_GITHUB_CLIENT_SECRET on the server."
+            );
+        }
+        String redirectUri = resolveGithubRedirectUri(requestedRedirectUri, publicApiBase);
+        String scopes = firstNonBlank(properties.getGithubScopes(), "repo read:org user:email");
+        String state = UUID.randomUUID().toString();
+        String url = "https://github.com/login/oauth/authorize"
+                + "?client_id=" + encode(clientId)
+                + "&redirect_uri=" + encode(redirectUri)
+                + "&scope=" + encode(scopes)
+                + "&state=" + encode(state)
+                + "&allow_signup=false";
+        return new GithubOAuthUrlResponse(true, url, clientId, redirectUri, "Ready for GitHub authorization.");
+    }
+
+    public IntegrationConnectResponse exchangeGithubOAuth(GithubOAuthExchangeRequest request) {
+        String clientId = properties.getGithubClientId() == null ? "" : properties.getGithubClientId().trim();
+        String clientSecret = properties.getGithubClientSecret() == null ? "" : properties.getGithubClientSecret().trim();
+        if (clientId.isBlank() || clientSecret.isBlank()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "GitHub OAuth credentials (client ID/secret) are not configured on the server.");
+        }
+        String code = required(request.code(), "Authorization code is required.");
+        String redirectUri = resolveGithubRedirectUri(request.redirectUri(), null);
+        log.info("Exchanging GitHub OAuth code redirectUri={}", redirectUri);
+
+        String form = "client_id=" + encode(clientId)
+                + "&client_secret=" + encode(clientSecret)
+                + "&code=" + encode(code)
+                + "&redirect_uri=" + encode(redirectUri);
+        IntegrationHttpGateway.IntegrationHttpResponse tokenRes = http.post(
+                "https://github.com/login/oauth/access_token",
+                Map.of("Accept", "application/json"),
+                form,
+                "application/x-www-form-urlencoded"
+        );
+        if (tokenRes.status() < 200 || tokenRes.status() >= 300) {
+            log.warn(
+                    "GitHub OAuth token exchange failed: status={} body={}",
+                    tokenRes.status(),
+                    abbreviate(tokenRes.body(), 500)
+            );
+            String err = firstText(tokenRes.body(), "error_description", "error", "message");
+            throw new ApiException(
+                    HttpStatus.UNAUTHORIZED,
+                    "Failed to exchange GitHub code: " + (err.isBlank() ? "HTTP " + tokenRes.status() : err)
+            );
+        }
+        String accessToken = firstText(tokenRes.body(), "access_token");
+        if (accessToken.isBlank()) {
+            String err = firstText(tokenRes.body(), "error_description", "error", "message");
+            throw new ApiException(
+                    HttpStatus.UNAUTHORIZED,
+                    "GitHub response did not contain an access token"
+                            + (err.isBlank() ? "." : ": " + err)
+            );
+        }
+
+        IntegrationConnectResponse identified = identifyGitHub(accessToken, request.organization(), "oauth");
+        persist(
+                parseProjectId(request.projectId()),
+                "github",
+                identified.account(),
+                "https://github.com",
+                null,
+                identified.account(),
+                trimToNull(request.organization()),
+                null,
+                null,
+                null,
+                null,
+                null,
+                "oauth",
+                accessToken,
+                null,
+                null
+        );
+        return redact(identified);
+    }
+
     public JiraOAuthUrlResponse getJiraOAuthUrl() {
+        return getJiraOAuthUrl(null, null);
+    }
+
+    public JiraOAuthUrlResponse getJiraOAuthUrl(String requestedRedirectUri, String publicApiBase) {
         String clientId = properties.getJiraClientId() == null ? "" : properties.getJiraClientId().trim();
         if (clientId.isBlank()) {
             return new JiraOAuthUrlResponse(
@@ -114,12 +211,11 @@ public class IntegrationConnectService {
                     "Jira OAuth is not configured. Set BLINK_JIRA_CLIENT_ID and BLINK_JIRA_CLIENT_SECRET, or connect using an API token."
             );
         }
-        String redirectUri = !properties.getJiraRedirectUri().isBlank()
-                ? properties.getJiraRedirectUri()
-                : "http://localhost:5173/api/integrations/jira/oauth/callback";
-        String scopes = !properties.getJiraScopes().isBlank()
-                ? properties.getJiraScopes()
-                : "read:jira-work write:jira-work read:jira-user read:me offline_access";
+        String redirectUri = resolveJiraRedirectUri(requestedRedirectUri, publicApiBase);
+        String scopes = firstNonBlank(
+                properties.getJiraScopes(),
+                "read:jira-work write:jira-work read:jira-user read:me offline_access"
+        );
         String state = UUID.randomUUID().toString();
         String url = "https://auth.atlassian.com/authorize"
                 + "?audience=api.atlassian.com"
@@ -139,9 +235,7 @@ public class IntegrationConnectService {
             throw new ApiException(HttpStatus.BAD_REQUEST, "Jira OAuth credentials (client ID/secret) are not configured on the server.");
         }
         String code = required(request.code(), "Authorization code is required.");
-        String redirectUri = request.redirectUri() != null && !request.redirectUri().isBlank()
-                ? request.redirectUri().trim()
-                : properties.getJiraRedirectUri();
+        String redirectUri = resolveJiraRedirectUri(request.redirectUri(), null);
 
         Map<String, String> tokenPayload = new LinkedHashMap<>();
         tokenPayload.put("grant_type", "authorization_code");
@@ -764,7 +858,7 @@ public class IntegrationConnectService {
         }
         StoredIntegration stored = load(parseProjectId(request.projectId()), "github").orElse(null);
         String token = firstNonBlank(request.token(), stored == null ? null : stored.accessToken());
-        token = required(token, "GitHub personal access token is required. Connect GitHub on Integrations first.");
+        token = required(token, "Connect GitHub on Integrations first (sign in with GitHub).");
         Map<String, String> headers = githubHeaders(token);
         getJson("https://api.github.com/user", headers);
 
@@ -815,20 +909,48 @@ public class IntegrationConnectService {
 
     private IntegrationConnectResponse connectGitHub(IntegrationConnectRequest request) {
         String token = required(request.token(), "GitHub personal access token is required.");
+        return identifyGitHub(token, request.organization(), "token");
+    }
+
+    private IntegrationConnectResponse identifyGitHub(String token, String organization, String authType) {
         IntegrationHttpGateway.IntegrationHttpResponse user = getJson(
                 "https://api.github.com/user",
                 githubHeaders(token)
         );
         String account = firstText(user.body(), "login", "name");
-        String org = trimToNull(request.organization());
+        String org = trimToNull(organization);
         if (org != null) {
             getJson(
                     "https://api.github.com/orgs/" + encode(org),
                     githubHeaders(token)
             );
-            return new IntegrationConnectResponse(true, "github", account, "Connected as " + account + " to " + org);
+            return new IntegrationConnectResponse(
+                    true,
+                    "github",
+                    account,
+                    "Connected as " + account + " to " + org,
+                    null,
+                    null,
+                    "https://github.com",
+                    null,
+                    authType,
+                    token,
+                    List.of()
+            );
         }
-        return new IntegrationConnectResponse(true, "github", account, "Connected as " + account);
+        return new IntegrationConnectResponse(
+                true,
+                "github",
+                account,
+                "Connected as " + account,
+                null,
+                null,
+                "https://github.com",
+                null,
+                authType,
+                token,
+                List.of()
+        );
     }
 
     private IntegrationConnectResponse connectBitbucket(IntegrationConnectRequest request) {
@@ -1104,6 +1226,26 @@ public class IntegrationConnectService {
             return Optional.empty();
         }
         return integrations.find(projectId, provider);
+    }
+
+    private String resolveGithubRedirectUri(String requested, String publicApiBase) {
+        return OAuthRedirectResolver.resolve(
+                "github",
+                requested,
+                publicApiBase,
+                properties.getGithubRedirectUri(),
+                properties.getCorsOrigins()
+        );
+    }
+
+    private String resolveJiraRedirectUri(String requested, String publicApiBase) {
+        return OAuthRedirectResolver.resolve(
+                "jira",
+                requested,
+                publicApiBase,
+                properties.getJiraRedirectUri(),
+                properties.getCorsOrigins()
+        );
     }
 
     private static IntegrationConnectResponse redact(IntegrationConnectResponse result) {
