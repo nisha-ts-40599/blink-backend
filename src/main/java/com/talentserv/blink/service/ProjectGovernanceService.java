@@ -144,7 +144,7 @@ public class ProjectGovernanceService {
         Project project = projectService.requireProject(id);
         String reqText = (request != null && request.requirementText() != null && !request.requirementText().isBlank())
                 ? request.requirementText()
-                : project.getDescription();
+                : joinProjectDetails(project.getProjectName(), project.getDescription());
         String actor = (request != null && request.actor() != null) ? request.actor() : "operator";
         String projectIdentifier = ProjectCodes.slug(project.getProjectName());
         if (projectIdentifier.isBlank()) {
@@ -271,6 +271,15 @@ public class ProjectGovernanceService {
             }
         }
         return warnings;
+    }
+
+    private static String joinProjectDetails(String projectName, String description) {
+        String name = projectName == null ? "" : projectName.trim();
+        String details = description == null ? "" : description.trim();
+        if (!name.isBlank() && !details.isBlank()) {
+            return "# " + name + "\n\n" + details;
+        }
+        return details.isBlank() ? name : details;
     }
 
     public static List<String> extractStringList(JsonNode node) {

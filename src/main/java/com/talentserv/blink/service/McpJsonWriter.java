@@ -73,10 +73,15 @@ public final class McpJsonWriter {
             String jiraUrl,
             String jiraUsername,
             String confluenceUrl,
-            String confluenceUsername
+            String confluenceUsername,
+            String jiraCloudId
     ) {
+        public SiteHints(String jiraUrl, String jiraUsername, String confluenceUrl, String confluenceUsername) {
+            this(jiraUrl, jiraUsername, confluenceUrl, confluenceUsername, null);
+        }
+
         public static SiteHints empty() {
-            return new SiteHints(null, null, null, null);
+            return new SiteHints(null, null, null, null, null);
         }
     }
 
@@ -190,7 +195,7 @@ public final class McpJsonWriter {
             out.append("JIRA_URL=").append(valueOr(site.jiraUrl(), "https://YOUR_ORG.atlassian.net")).append('\n');
             out.append("JIRA_USERNAME=").append(valueOr(site.jiraUsername(), "you@example.com")).append('\n');
             out.append("JIRA_API_TOKEN=\n");
-            out.append("JIRA_CLOUD_ID=\n");
+            out.append("JIRA_CLOUD_ID=").append(valueOr(site.jiraCloudId(), "")).append('\n');
             out.append("# mcp-atlassian also reads these (wrapper fills from JIRA_* if blank):\n");
             out.append("ATLASSIAN_BASE_URL=").append(valueOr(site.jiraUrl(), "https://YOUR_ORG.atlassian.net")).append('\n');
             out.append("ATLASSIAN_SITE_URL=").append(valueOr(site.jiraUrl(), "https://YOUR_ORG.atlassian.net")).append('\n');

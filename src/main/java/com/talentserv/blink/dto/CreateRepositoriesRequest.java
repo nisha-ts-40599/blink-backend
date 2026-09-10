@@ -8,7 +8,8 @@ import jakarta.validation.constraints.NotEmpty;
 
 public record CreateRepositoriesRequest(
         @NotBlank(message = "Provider is required") String provider,
-        @NotBlank(message = "Token is required") String token,
+        String projectId,
+        String token,
         String username,
         String organization,
         String workspace,

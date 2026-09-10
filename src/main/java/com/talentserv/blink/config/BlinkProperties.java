@@ -50,6 +50,18 @@ public class BlinkProperties {
     private String canonicalSetupPython = "python3";
     private Duration canonicalSetupTimeout = Duration.ofSeconds(90);
 
+    /**
+     * Atlassian OAuth 2.0 (3LO) client credentials.
+     */
+    private String jiraClientId = "";
+    private String jiraClientSecret = "";
+    private String jiraRedirectUri = "http://localhost:5173/api/integrations/jira/oauth/callback";
+    private String jiraScopes = "read:jira-work write:jira-work read:jira-user read:me offline_access";
+    /**
+     * Passphrase used to derive the AES key for per-project GitHub/Jira tokens.
+     */
+    private String integrationSecretKey = "";
+
     public String getAutomationSdlcPath() {
         return automationSdlcPath;
     }
@@ -160,6 +172,46 @@ public class BlinkProperties {
 
     public void setCanonicalSetupTimeout(Duration canonicalSetupTimeout) {
         this.canonicalSetupTimeout = canonicalSetupTimeout;
+    }
+
+    public String getJiraClientId() {
+        return jiraClientId;
+    }
+
+    public void setJiraClientId(String jiraClientId) {
+        this.jiraClientId = jiraClientId;
+    }
+
+    public String getJiraClientSecret() {
+        return jiraClientSecret;
+    }
+
+    public void setJiraClientSecret(String jiraClientSecret) {
+        this.jiraClientSecret = jiraClientSecret;
+    }
+
+    public String getJiraRedirectUri() {
+        return jiraRedirectUri;
+    }
+
+    public void setJiraRedirectUri(String jiraRedirectUri) {
+        this.jiraRedirectUri = jiraRedirectUri;
+    }
+
+    public String getJiraScopes() {
+        return jiraScopes;
+    }
+
+    public void setJiraScopes(String jiraScopes) {
+        this.jiraScopes = jiraScopes;
+    }
+
+    public String getIntegrationSecretKey() {
+        return integrationSecretKey;
+    }
+
+    public void setIntegrationSecretKey(String integrationSecretKey) {
+        this.integrationSecretKey = integrationSecretKey;
     }
 
     public boolean s3Enabled() {
