@@ -24,6 +24,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import com.talentserv.blink.domain.Project;
 import com.talentserv.blink.dto.ConfigureStakeholdersResponse;
+import com.talentserv.blink.dto.GovernanceStatusResponse;
 import com.talentserv.blink.dto.PlanProductScopeRequest;
 import com.talentserv.blink.dto.PlanProductScopeResponse;
 import com.talentserv.blink.dto.ProjectRequest;
@@ -148,7 +149,13 @@ public class ProjectController {
 
     @GetMapping("/{id}")
     public ProjectResponse get(@PathVariable Long id) {
-        return attachWorkspace(projectService.get(id), false);
+        return projectGovernanceService.attachCurrent(attachWorkspace(projectService.get(id), false));
+    }
+
+    @GetMapping("/{id}/governance-status")
+    public GovernanceStatusResponse governanceStatus(@PathVariable Long id) {
+        projectService.requireProject(id);
+        return projectGovernanceService.status(id);
     }
 
     @GetMapping("/{id}/workspace")

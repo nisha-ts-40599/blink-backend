@@ -14,7 +14,8 @@ public record ProjectResponse(
         String workspaceUrl,
         String workspaceStatus,
         List<String> sodWarnings,
-        String nextCommand
+        String nextCommand,
+        String governanceStatus
 ) {
     public ProjectResponse(
             Long id,
@@ -40,7 +41,8 @@ public record ProjectResponse(
                 workspaceUrl,
                 workspaceStatus,
                 List.of(),
-                "/plan-product-scope"
+                "/plan-product-scope",
+                "idle"
         );
     }
 
@@ -57,11 +59,16 @@ public record ProjectResponse(
                 url,
                 workspaceStatus,
                 sodWarnings,
-                nextCommand
+                nextCommand,
+                governanceStatus
         );
     }
 
     public ProjectResponse withGovernance(List<String> sodWarnings, String nextCommand) {
+        return withGovernance(sodWarnings, nextCommand, "ready");
+    }
+
+    public ProjectResponse withGovernance(List<String> sodWarnings, String nextCommand, String governanceStatus) {
         return new ProjectResponse(
                 id,
                 projectName,
@@ -74,7 +81,8 @@ public record ProjectResponse(
                 workspaceUrl,
                 workspaceStatus,
                 sodWarnings == null ? List.of() : List.copyOf(sodWarnings),
-                nextCommand == null || nextCommand.isBlank() ? "/plan-product-scope" : nextCommand
+                nextCommand == null || nextCommand.isBlank() ? "/plan-product-scope" : nextCommand,
+                governanceStatus == null || governanceStatus.isBlank() ? "idle" : governanceStatus
         );
     }
 }
