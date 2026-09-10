@@ -37,6 +37,12 @@ public class BlinkProperties {
      */
     private String agentRuntimeToken = "blink-groom-2026";
 
+    /**
+     * When set and AWS keys are present, invoke this Lambda directly instead of
+     * the API Gateway URL (API Gateway times out at 29s; Luna reasoning needs longer).
+     */
+    private String agentRuntimeLambdaFunction = "blink-agent-runtime";
+
     private String awsAccessKeyId = "";
     private String awsSecretAccessKey = "";
     private String awsRegion = "us-west-2";
@@ -108,6 +114,14 @@ public class BlinkProperties {
 
     public void setAgentRuntimeToken(String agentRuntimeToken) {
         this.agentRuntimeToken = agentRuntimeToken;
+    }
+
+    public String getAgentRuntimeLambdaFunction() {
+        return agentRuntimeLambdaFunction;
+    }
+
+    public void setAgentRuntimeLambdaFunction(String agentRuntimeLambdaFunction) {
+        this.agentRuntimeLambdaFunction = agentRuntimeLambdaFunction;
     }
 
     public String getAwsAccessKeyId() {

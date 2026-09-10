@@ -48,6 +48,7 @@ blink:
   setup-agent-url: ${BLINK_SETUP_AGENT_URL:http://127.0.0.1:8091/setup/start}
   agent-runtime-url: ${BLINK_AGENT_RUNTIME_URL:https://z5i3yybrx1.execute-api.us-west-2.amazonaws.com}
   agent-runtime-token: ${BLINK_AGENT_RUNTIME_TOKEN:blink-groom-2026}
+  agent-runtime-lambda-function: ${BLINK_AGENT_RUNTIME_LAMBDA_FUNCTION:blink-agent-runtime}
   aws-access-key-id: ${AWS_ACCESS_KEY_ID:}
   aws-secret-access-key: ${AWS_SECRET_ACCESS_KEY:}
   aws-region: ${AWS_REGION:us-west-2}

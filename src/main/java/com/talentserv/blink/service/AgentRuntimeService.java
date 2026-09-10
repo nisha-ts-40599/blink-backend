@@ -2,6 +2,7 @@ package com.talentserv.blink.service;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.List;
 
 import org.apache.hc.client5.http.classic.methods.HttpPost;
@@ -26,6 +27,15 @@ import com.talentserv.blink.dto.StakeholderRequest;
 import com.talentserv.blink.error.ApiException;
 
 import jakarta.annotation.PreDestroy;
+import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
+import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
+import software.amazon.awssdk.core.SdkBytes;
+import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
+import software.amazon.awssdk.http.urlconnection.UrlConnectionHttpClient;
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.lambda.LambdaClient;
+import software.amazon.awssdk.services.lambda.model.InvokeRequest;
+import software.amazon.awssdk.services.lambda.model.InvokeResponse;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ArrayNode;
@@ -39,9 +49,10 @@ public class AgentRuntimeService {
 
     private final BlinkProperties properties;
     private final CloseableHttpClient client = HttpClients.custom()
+            .disableAutomaticRetries()
             .setConnectionManager(PoolingHttpClientConnectionManagerBuilder.create()
                     .setDefaultConnectionConfig(ConnectionConfig.custom()
-                            .setConnectTimeout(Timeout.ofSeconds(3))
+                            .setConnectTimeout(Timeout.ofSeconds(10))
                             .setSocketTimeout(Timeout.ofSeconds(90))
                             .build())
                     .build())
@@ -50,6 +61,7 @@ public class AgentRuntimeService {
                     .setConnectionRequestTimeout(Timeout.ofSeconds(5))
                     .build())
             .build();
+    private volatile LambdaClient lambdaClient;
 
     public AgentRuntimeService(BlinkProperties properties) {
         this.properties = properties;
@@ -61,6 +73,10 @@ public class AgentRuntimeService {
             client.close();
         } catch (IOException ex) {
             log.debug("Agent HTTP client close: {}", ex.toString());
+        }
+        LambdaClient current = lambdaClient;
+        if (current != null) {
+            current.close();
         }
     }
 
@@ -191,6 +207,10 @@ public class AgentRuntimeService {
             throw new ApiException(HttpStatus.BAD_REQUEST, "Specify command as clarify-requirement or setup-new-workspace.");
         }
 
+        if (shouldInvokeLambda(url)) {
+            return invokeLambda(payload, token.trim());
+        }
+
         HttpPost post = new HttpPost(url.trim());
         post.setHeader("Accept", "application/json");
         post.setHeader("User-Agent", "Blink-Backend/1.0");
@@ -233,6 +253,12 @@ public class AgentRuntimeService {
                     throw new ApiException(HttpStatus.BAD_REQUEST, message);
                 }
                 log.warn("Agent runtime HTTP {} message={}", statusCode, parsed.path("message").asText(""));
+                if (statusCode == 503) {
+                    throw new ApiException(
+                            HttpStatus.BAD_GATEWAY,
+                            "The hosted planner hit the API Gateway 29s limit. Retry once, or use direct Lambda invoke."
+                    );
+                }
                 throw new ApiException(HttpStatus.BAD_GATEWAY, "Could not reach the agent runtime.");
             });
         } catch (ApiException ex) {
@@ -243,6 +269,120 @@ public class AgentRuntimeService {
                     HttpStatus.BAD_GATEWAY,
                     "Could not reach the agent runtime at " + url + ". Error: " + ex.getMessage()
             );
+        }
+    }
+
+    private boolean shouldInvokeLambda(String url) {
+        String lowered = url.trim().toLowerCase();
+        if (lowered.contains("127.0.0.1") || lowered.contains("localhost")) {
+            return false;
+        }
+        String functionName = properties.getAgentRuntimeLambdaFunction();
+        if (functionName == null || functionName.isBlank()) {
+            return false;
+        }
+        if (properties.getAwsAccessKeyId() == null || properties.getAwsAccessKeyId().isBlank()
+                || properties.getAwsSecretAccessKey() == null || properties.getAwsSecretAccessKey().isBlank()) {
+            return false;
+        }
+        return lowered.contains("execute-api") || lowered.contains("lambda-url") || lowered.contains("amazonaws.com");
+    }
+
+    private JsonNode invokeLambda(ObjectNode payload, String token) {
+        String functionName = properties.getAgentRuntimeLambdaFunction().trim();
+        ObjectNode event = MAPPER.createObjectNode();
+        event.put("version", "2.0");
+        event.put("routeKey", "$default");
+        event.put("rawPath", "/");
+        event.put("rawQueryString", "");
+        ObjectNode headers = event.putObject("headers");
+        headers.put("authorization", "Bearer " + token);
+        headers.put("content-type", "application/json");
+        headers.put("accept", "application/json");
+        ObjectNode requestContext = event.putObject("requestContext");
+        ObjectNode http = requestContext.putObject("http");
+        http.put("method", "POST");
+        http.put("path", "/");
+        http.put("protocol", "HTTP/1.1");
+        http.put("sourceIp", "127.0.0.1");
+        event.put("body", payload.toString());
+        event.put("isBase64Encoded", false);
+
+        log.info("Invoking Lambda {} command={}", functionName, payload.path("command").asText(""));
+        try {
+            InvokeResponse response = lambdaClient().invoke(InvokeRequest.builder()
+                    .functionName(functionName)
+                    .payload(SdkBytes.fromUtf8String(event.toString()))
+                    .build());
+            String raw = response.payload() == null ? "{}" : response.payload().asUtf8String();
+            if (response.functionError() != null && !response.functionError().isBlank()) {
+                log.warn("Lambda {} function error {}: {}", functionName, response.functionError(), raw);
+                throw new ApiException(HttpStatus.BAD_GATEWAY, "Agent runtime Lambda failed: " + response.functionError());
+            }
+            JsonNode envelope;
+            try {
+                envelope = MAPPER.readTree(raw);
+            } catch (Exception ex) {
+                throw new ApiException(HttpStatus.BAD_GATEWAY, "Agent runtime returned an unexpected response.");
+            }
+            int statusCode = envelope.path("statusCode").asInt(200);
+            String body = envelope.path("body").asText(raw);
+            if (envelope.path("isBase64Encoded").asBoolean(false)) {
+                body = new String(java.util.Base64.getDecoder().decode(body), StandardCharsets.UTF_8);
+            }
+            JsonNode parsed;
+            try {
+                parsed = MAPPER.readTree(body);
+            } catch (Exception ex) {
+                parsed = envelope;
+            }
+            if (statusCode >= 200 && statusCode < 300) {
+                log.info("Agent runtime {} Lambda HTTP {}", payload.path("command").asText(""), statusCode);
+                return parsed;
+            }
+            if (statusCode == 400) {
+                throw new ApiException(HttpStatus.BAD_REQUEST, parsed.path("message").asText("The agent runtime rejected that request."));
+            }
+            log.warn("Agent runtime Lambda HTTP {} message={}", statusCode, parsed.path("message").asText(""));
+            throw new ApiException(HttpStatus.BAD_GATEWAY, "Could not reach the agent runtime.");
+        } catch (ApiException ex) {
+            throw ex;
+        } catch (Exception ex) {
+            log.warn("Lambda invoke failed for {}: {}", functionName, ex.toString());
+            throw new ApiException(
+                    HttpStatus.BAD_GATEWAY,
+                    "Could not reach the agent runtime via Lambda. Error: " + ex.getMessage()
+            );
+        }
+    }
+
+    private LambdaClient lambdaClient() {
+        LambdaClient current = lambdaClient;
+        if (current != null) {
+            return current;
+        }
+        synchronized (this) {
+            if (lambdaClient == null) {
+                lambdaClient = LambdaClient.builder()
+                        .region(Region.of(properties.getAwsRegion() == null || properties.getAwsRegion().isBlank()
+                                ? "us-west-2"
+                                : properties.getAwsRegion().trim()))
+                        .credentialsProvider(StaticCredentialsProvider.create(
+                                AwsBasicCredentials.create(
+                                        properties.getAwsAccessKeyId().trim(),
+                                        properties.getAwsSecretAccessKey().trim()
+                                )
+                        ))
+                        .httpClientBuilder(UrlConnectionHttpClient.builder()
+                                .connectionTimeout(Duration.ofSeconds(10))
+                                .socketTimeout(Duration.ofSeconds(90)))
+                        .overrideConfiguration(ClientOverrideConfiguration.builder()
+                                .apiCallTimeout(Duration.ofSeconds(95))
+                                .apiCallAttemptTimeout(Duration.ofSeconds(95))
+                                .build())
+                        .build();
+            }
+            return lambdaClient;
         }
     }
 
