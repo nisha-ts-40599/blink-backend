@@ -2,18 +2,27 @@ package com.talentserv.blink.service;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import tools.jackson.databind.JsonNode;
 import com.talentserv.blink.domain.Project;
 import com.talentserv.blink.dto.ConfigureStakeholdersResponse;
+import com.talentserv.blink.dto.GovernanceStatusResponse;
 import com.talentserv.blink.dto.PlanProductScopeRequest;
 import com.talentserv.blink.dto.PlanProductScopeResponse;
 import com.talentserv.blink.dto.ProjectResponse;
 import com.talentserv.blink.dto.StakeholderRequest;
+
+import jakarta.annotation.PreDestroy;
 
 /**
  * Service orchestrating project governance and product-scope operations.
@@ -28,18 +37,79 @@ public class ProjectGovernanceService {
     private final AgentRuntimeService agentRuntimeService;
     private final S3WorkspaceService s3WorkspaceService;
     private final ProjectService projectService;
-    private final java.util.concurrent.ConcurrentHashMap<String, CachedGovernance> governanceCache = new java.util.concurrent.ConcurrentHashMap<>();
+    private final Executor executor;
+    private final boolean ownsExecutor;
+    private final ConcurrentHashMap<String, CachedGovernance> governanceCache = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Long, GovernanceJob> jobs = new ConcurrentHashMap<>();
 
     private record CachedGovernance(List<String> warnings, String nextCommand) {}
 
+    private static final class GovernanceJob {
+        final String cacheKey;
+        final AtomicReference<String> status = new AtomicReference<>("preparing");
+        final AtomicReference<List<String>> warnings = new AtomicReference<>(List.of());
+        final AtomicReference<String> nextCommand = new AtomicReference<>("/plan-product-scope");
+        final AtomicReference<String> message = new AtomicReference<>("Checking stakeholder roles.");
+
+        GovernanceJob(String cacheKey) {
+            this.cacheKey = cacheKey;
+        }
+
+        GovernanceStatusResponse toResponse() {
+            return new GovernanceStatusResponse(
+                    status.get(),
+                    warnings.get(),
+                    nextCommand.get(),
+                    message.get()
+            );
+        }
+    }
+
+    @Autowired
     public ProjectGovernanceService(
             AgentRuntimeService agentRuntimeService,
             S3WorkspaceService s3WorkspaceService,
             ProjectService projectService
     ) {
+        this(agentRuntimeService, s3WorkspaceService, projectService, defaultExecutor(), true);
+    }
+
+    public ProjectGovernanceService(
+            AgentRuntimeService agentRuntimeService,
+            S3WorkspaceService s3WorkspaceService,
+            ProjectService projectService,
+            Executor executor
+    ) {
+        this(agentRuntimeService, s3WorkspaceService, projectService, executor, false);
+    }
+
+    private ProjectGovernanceService(
+            AgentRuntimeService agentRuntimeService,
+            S3WorkspaceService s3WorkspaceService,
+            ProjectService projectService,
+            Executor executor,
+            boolean ownsExecutor
+    ) {
         this.agentRuntimeService = agentRuntimeService;
         this.s3WorkspaceService = s3WorkspaceService;
         this.projectService = projectService;
+        this.executor = executor;
+        this.ownsExecutor = ownsExecutor;
+    }
+
+    private static ExecutorService defaultExecutor() {
+        return Executors.newFixedThreadPool(2, runnable -> {
+            Thread thread = new Thread(runnable, "blink-governance");
+            thread.setDaemon(true);
+            return thread;
+        });
+    }
+
+    @PreDestroy
+    void close() {
+        if (ownsExecutor && executor instanceof ExecutorService service) {
+            service.shutdownNow();
+        }
     }
 
     private String computeCacheKey(Long projectId, List<StakeholderRequest> stakeholders) {
@@ -56,19 +126,64 @@ public class ProjectGovernanceService {
     }
 
     public ProjectResponse applyStakeholderGovernance(ProjectResponse project, List<StakeholderRequest> stakeholders) {
-        if (stakeholders == null || stakeholders.isEmpty()) {
+        if (project == null || project.id() == null || stakeholders == null || stakeholders.isEmpty()) {
             return project;
         }
         String cacheKey = computeCacheKey(project.id(), stakeholders);
         CachedGovernance cached = governanceCache.get(cacheKey);
         if (cached != null) {
             log.info("Reusing cached stakeholder governance for projectId={} (no remote agent call needed)", project.id());
-            return project.withGovernance(cached.warnings(), cached.nextCommand());
+            GovernanceJob ready = new GovernanceJob(cacheKey);
+            ready.status.set("ready");
+            ready.warnings.set(List.copyOf(cached.warnings()));
+            ready.nextCommand.set(cached.nextCommand());
+            ready.message.set("Stakeholders configured.");
+            jobs.put(project.id(), ready);
+            return project.withGovernance(cached.warnings(), cached.nextCommand(), "ready");
         }
+        GovernanceJob existing = jobs.get(project.id());
+        if (existing != null && cacheKey.equals(existing.cacheKey) && "preparing".equals(existing.status.get())) {
+            return project.withGovernance(existing.warnings.get(), existing.nextCommand.get(), "preparing");
+        }
+        GovernanceJob job = new GovernanceJob(cacheKey);
+        jobs.put(project.id(), job);
+        String projectName = project.projectName();
+        Long projectId = project.id();
+        List<StakeholderRequest> snapshot = List.copyOf(stakeholders);
+        executor.execute(() -> runConfigureStakeholders(projectName, projectId, snapshot, cacheKey, job));
+        return project.withGovernance(List.of(), "/plan-product-scope", "preparing");
+    }
+
+    public ProjectResponse attachCurrent(ProjectResponse project) {
+        if (project == null || project.id() == null) {
+            return project;
+        }
+        GovernanceJob job = jobs.get(project.id());
+        if (job == null) {
+            return project;
+        }
+        return project.withGovernance(job.warnings.get(), job.nextCommand.get(), job.status.get());
+    }
+
+    public GovernanceStatusResponse status(Long projectId) {
+        if (projectId == null) {
+            return GovernanceStatusResponse.idle();
+        }
+        GovernanceJob job = jobs.get(projectId);
+        return job == null ? GovernanceStatusResponse.idle() : job.toResponse();
+    }
+
+    private void runConfigureStakeholders(
+            String projectName,
+            Long projectId,
+            List<StakeholderRequest> stakeholders,
+            String cacheKey,
+            GovernanceJob job
+    ) {
         try {
             JsonNode result = agentRuntimeService.invokeConfigureStakeholders(
-                    project.projectName(),
-                    String.valueOf(project.id()),
+                    projectName,
+                    String.valueOf(projectId),
                     stakeholders,
                     "apply"
             );
@@ -76,13 +191,22 @@ public class ProjectGovernanceService {
                 List<String> warnings = extractSodWarnings(result);
                 String nextCommand = result.path("nextCommand").asText("/plan-product-scope");
                 governanceCache.put(cacheKey, new CachedGovernance(warnings, nextCommand));
-                persistOverlayFiles(project.projectName(), project.id(), result, "configure-stakeholders");
-                return project.withGovernance(warnings, nextCommand);
+                persistOverlayFiles(projectName, projectId, result, "configure-stakeholders");
+                job.warnings.set(List.copyOf(warnings));
+                job.nextCommand.set(nextCommand);
+                job.status.set("ready");
+                job.message.set(warnings.isEmpty()
+                        ? "Stakeholders configured."
+                        : "Stakeholders configured with a governance note.");
+                return;
             }
+            job.status.set("failed");
+            job.message.set("Stakeholder checks did not return a result.");
         } catch (Exception ex) {
             log.warn("Agent configure-stakeholders invocation failed: {}", ex.getMessage());
+            job.status.set("failed");
+            job.message.set("Could not finish stakeholder checks. You can keep going.");
         }
-        return project;
     }
 
     public ConfigureStakeholdersResponse configureStakeholders(Long id, List<StakeholderRequest> stakeholders) {
@@ -124,6 +248,12 @@ public class ProjectGovernanceService {
 
                 governanceCache.put(cacheKey, new CachedGovernance(warnings, nextCommand));
                 persistOverlayFiles(project.getProjectName(), id, result, "configure-stakeholders");
+                GovernanceJob ready = new GovernanceJob(cacheKey);
+                ready.status.set("ready");
+                ready.warnings.set(List.copyOf(warnings));
+                ready.nextCommand.set(nextCommand);
+                ready.message.set(message);
+                jobs.put(id, ready);
                 return new ConfigureStakeholdersResponse(status, message, nextCommand, warnings, errors, configured);
             }
         } catch (Exception ex) {

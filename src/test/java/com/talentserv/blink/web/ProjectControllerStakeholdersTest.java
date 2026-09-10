@@ -3,9 +3,13 @@ package com.talentserv.blink.web;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.Executor;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -55,11 +59,19 @@ class ProjectControllerStakeholdersTest {
     private BlinkProperties properties;
     private ProjectGovernanceService projectGovernanceService;
     private ProjectController controller;
+    private final List<Runnable> background = new ArrayList<>();
+    private final Executor capturingExecutor = background::add;
 
     @BeforeEach
     void setUp() {
         properties = new BlinkProperties();
-        projectGovernanceService = new ProjectGovernanceService(agentRuntimeService, s3WorkspaceService, projectService);
+        background.clear();
+        projectGovernanceService = new ProjectGovernanceService(
+                agentRuntimeService,
+                s3WorkspaceService,
+                projectService,
+                capturingExecutor
+        );
         controller = new ProjectController(
                 projectService,
                 requirementMarkdownService,
@@ -112,10 +124,22 @@ class ProjectControllerStakeholdersTest {
         ProjectResponse result = controller.create(request);
 
         assertThat(result.id()).isEqualTo(10L);
-        assertThat(result.nextCommand()).isEqualTo("/plan-product-scope");
-        assertThat(result.sodWarnings()).hasSize(1);
-        assertThat(result.sodWarnings().getFirst())
-                .isEqualTo("Grooming owner should not be sole QA gate approver when both are required");
+        assertThat(result.governanceStatus()).isEqualTo("preparing");
+        assertThat(result.sodWarnings()).isEmpty();
+        verify(agentRuntimeService, never()).invokeConfigureStakeholders(any(), any(), any(), any());
+
+        background.forEach(Runnable::run);
+
+        assertThat(projectGovernanceService.status(10L).status()).isEqualTo("ready");
+        assertThat(projectGovernanceService.status(10L).sodWarnings()).containsExactly(
+                "Grooming owner should not be sole QA gate approver when both are required"
+        );
+        when(projectService.get(10L)).thenReturn(createdResponse);
+        assertThat(controller.get(10L).sodWarnings()).containsExactly(
+                "Grooming owner should not be sole QA gate approver when both are required"
+        );
+        assertThat(controller.get(10L).governanceStatus()).isEqualTo("ready");
+        verify(agentRuntimeService).invokeConfigureStakeholders(eq("Fitoyo"), eq("10"), eq(stakeholders), eq("apply"));
     }
 
     @Test
