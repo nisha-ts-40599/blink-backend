@@ -184,6 +184,7 @@ public class ProjectController {
             @RequestParam(value = "mcpProvider", required = false) List<String> mcpProviders,
             @RequestParam(value = "mcpJiraUrl", required = false) String mcpJiraUrl,
             @RequestParam(value = "mcpJiraEmail", required = false) String mcpJiraEmail,
+            @RequestParam(value = "mcpJiraCloudId", required = false) String mcpJiraCloudId,
             @RequestParam(value = "mcpConfluenceUrl", required = false) String mcpConfluenceUrl,
             @RequestParam(value = "mcpConfluenceEmail", required = false) String mcpConfluenceEmail
     ) throws IOException {
@@ -215,7 +216,7 @@ public class ProjectController {
                         toRepoFolders(repoNames, repoPurposes, repoDescriptions),
                         overlay,
                         mcpProviders == null ? List.of() : mcpProviders,
-                        new McpJsonWriter.SiteHints(mcpJiraUrl, mcpJiraEmail, mcpConfluenceUrl, mcpConfluenceEmail)
+                        new McpJsonWriter.SiteHints(mcpJiraUrl, mcpJiraEmail, mcpConfluenceUrl, mcpConfluenceEmail, mcpJiraCloudId)
                 )
         );
         log.info(
