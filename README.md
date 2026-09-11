@@ -139,6 +139,21 @@ You can also apply `src/main/resources/db/extra-schema.sql` yourself in the Rend
 
 Set `SPRING_JPA_DDL_AUTO=none` after the schema is stable if you do not want Hibernate to alter tables.
 
+## Stakeholder emails and Jira comments
+
+**Email** — `POST /api/stakeholder-questions/send` groups questions by `recipient_email` and sends **one message per person**.
+
+| Env | Purpose |
+| --- | --- |
+| `BLINK_SMTP_HOST` | When set, deliver via SMTP |
+| `BLINK_SMTP_PORT` | Default `587` |
+| `BLINK_SMTP_USERNAME` / `BLINK_SMTP_PASSWORD` | Optional auth |
+| `BLINK_SMTP_FROM` | From address |
+| `BLINK_SMTP_START_TLS` | Default `true` |
+| `BLINK_SMTP_OUTBOX_DIR` | When host is unset, write `.txt` files here (default `.blink-outbox`) |
+
+**Jira** — after epics/stories exist, `POST /api/integrations/jira/comments` posts a clarification comment with `<!-- blink-question:{id} -->`. `POST /api/integrations/jira/comments/poll` returns the next reply after that marker that is not from Blink’s posting account. OAuth already requests `write:jira-work`.
+
 ## API
 
 | Method | Path | Used by |

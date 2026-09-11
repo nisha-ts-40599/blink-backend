@@ -71,4 +71,11 @@ blink:
   figma-redirect-uri: ${BLINK_FIGMA_REDIRECT_URI:}
   figma-scopes: "${BLINK_FIGMA_SCOPES:current_user:read,file_comments:read,file_comments:write,file_content:read,file_dev_resources:read,file_dev_resources:write,file_metadata:read,file_versions:read}"
   integration-secret-key: ${BLINK_INTEGRATION_SECRET_KEY:}
+  smtp-host: ${BLINK_SMTP_HOST:}
+  smtp-port: ${BLINK_SMTP_PORT:587}
+  smtp-username: ${BLINK_SMTP_USERNAME:}
+  smtp-password: ${BLINK_SMTP_PASSWORD:}
+  smtp-from: ${BLINK_SMTP_FROM:blink@localhost}
+  smtp-start-tls: ${BLINK_SMTP_START_TLS:true}
+  smtp-outbox-dir: ${BLINK_SMTP_OUTBOX_DIR:.blink-outbox}
 

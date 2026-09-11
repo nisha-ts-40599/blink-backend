@@ -38,6 +38,10 @@ import com.talentserv.blink.dto.StoredIntegration;
 import com.talentserv.blink.dto.JiraCreateIssuesRequest;
 import com.talentserv.blink.dto.JiraCreateIssuesResponse;
 import com.talentserv.blink.dto.JiraCreatedIssue;
+import com.talentserv.blink.dto.JiraCommentCreateRequest;
+import com.talentserv.blink.dto.JiraCommentCreateResponse;
+import com.talentserv.blink.dto.JiraCommentPollRequest;
+import com.talentserv.blink.dto.JiraCommentPollResponse;
 import com.talentserv.blink.dto.JiraEpicSpec;
 import com.talentserv.blink.dto.FigmaOAuthExchangeRequest;
 import com.talentserv.blink.dto.FigmaOAuthUrlResponse;
@@ -693,6 +697,191 @@ public class IntegrationConnectService {
         String message = ok + " issue(s) created in Jira project " + projectKey
                 + (errors.isEmpty() ? "." : " (" + errors.size() + " failed).");
         return new JiraCreateIssuesResponse(status, message, created, errors);
+    }
+
+    public JiraCommentCreateResponse createJiraComment(JiraCommentCreateRequest request) {
+        if (request == null) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Jira comment request is required.");
+        }
+        String issueKey = required(request.issueKey(), "Jira issue key is required.");
+        String bodyText = required(request.body(), "Comment body is required.");
+        String questionId = trimToNull(request.blinkQuestionId());
+        if (questionId != null && !bodyText.contains("blink-question:" + questionId)) {
+            bodyText = "<!-- blink-question:" + questionId + " -->\n" + bodyText;
+        }
+        JiraCallContext ctx = resolveJiraFromRequest(
+                request.projectId(),
+                request.baseUrl(),
+                request.email(),
+                request.token(),
+                request.cloudId(),
+                request.accessToken()
+        );
+        ObjectNode payload = MAPPER.createObjectNode();
+        payload.set("body", adfDocument(bodyText));
+        Map<String, String> headers = new HashMap<>(ctx.headers());
+        headers.put("Content-Type", "application/json");
+        IntegrationHttpGateway.IntegrationHttpResponse res = http.post(
+                ctx.apiBase() + "/rest/api/3/issue/" + encode(issueKey) + "/comment",
+                headers,
+                writeNode(payload)
+        );
+        if (res.status() < 200 || res.status() >= 300) {
+            throw new ApiException(HttpStatus.BAD_GATEWAY, jiraErrorMessage(res.body(), res.status()));
+        }
+        String commentId = firstText(res.body(), "id");
+        return new JiraCommentCreateResponse(
+                "ok",
+                "Comment posted on " + issueKey,
+                issueKey,
+                commentId.isBlank() ? null : commentId,
+                questionId
+        );
+    }
+
+    public JiraCommentPollResponse pollJiraComments(JiraCommentPollRequest request) {
+        if (request == null || request.items() == null || request.items().isEmpty()) {
+            return new JiraCommentPollResponse("ok", "Nothing to poll.", List.of());
+        }
+        JiraCallContext ctx = resolveJiraFromRequest(
+                request.projectId(),
+                request.baseUrl(),
+                request.email(),
+                request.token(),
+                request.cloudId(),
+                request.accessToken()
+        );
+        String blinkAccountId = resolveBlinkJiraAccountId(ctx);
+        List<JiraCommentPollResponse.Reply> replies = new ArrayList<>();
+        for (JiraCommentPollRequest.PollItem item : request.items()) {
+            if (item == null || trimToNull(item.issueKey()) == null || trimToNull(item.blinkQuestionId()) == null) {
+                continue;
+            }
+            JiraCommentPollResponse.Reply reply = findReplyAfterMarker(
+                    ctx,
+                    item.issueKey().trim(),
+                    item.blinkQuestionId().trim(),
+                    blinkAccountId
+            );
+            if (reply != null) {
+                replies.add(reply);
+            }
+        }
+        return new JiraCommentPollResponse(
+                "ok",
+                replies.isEmpty() ? "No replies yet." : replies.size() + " reply(ies) found.",
+                replies
+        );
+    }
+
+    private JiraCallContext resolveJiraFromRequest(
+            String projectId,
+            String baseUrl,
+            String email,
+            String token,
+            String cloudId,
+            String accessToken
+    ) {
+        StoredIntegration stored = load(parseProjectId(projectId), "jira").orElse(null);
+        return resolveJiraCall(
+                firstNonBlank(baseUrl, stored == null ? null : stored.baseUrl()),
+                firstNonBlank(email, stored == null ? null : stored.email()),
+                firstNonBlank(token, stored != null && !"oauth".equals(stored.authType()) ? stored.accessToken() : null),
+                firstNonBlank(cloudId, stored == null ? null : stored.cloudId()),
+                firstNonBlank(accessToken, stored != null && "oauth".equals(stored.authType()) ? stored.accessToken() : null)
+        );
+    }
+
+    private String resolveBlinkJiraAccountId(JiraCallContext ctx) {
+        try {
+            IntegrationHttpGateway.IntegrationHttpResponse me = getJson(ctx.apiBase() + "/rest/api/3/myself", ctx.headers());
+            if (me.status() >= 200 && me.status() < 300) {
+                String accountId = firstText(me.body(), "accountId");
+                return accountId.isBlank() ? null : accountId;
+            }
+        } catch (Exception ignored) {
+            // Fall through — poll still works without exclusion when myself fails.
+        }
+        return null;
+    }
+
+    private JiraCommentPollResponse.Reply findReplyAfterMarker(
+            JiraCallContext ctx,
+            String issueKey,
+            String questionId,
+            String blinkAccountId
+    ) {
+        IntegrationHttpGateway.IntegrationHttpResponse res = getJson(
+                ctx.apiBase() + "/rest/api/3/issue/" + encode(issueKey) + "/comment",
+                ctx.headers()
+        );
+        if (res.status() < 200 || res.status() >= 300) {
+            throw new ApiException(HttpStatus.BAD_GATEWAY, jiraErrorMessage(res.body(), res.status()));
+        }
+        try {
+            JsonNode root = MAPPER.readTree(res.body() == null ? "{}" : res.body());
+            JsonNode comments = root.path("comments");
+            if (!comments.isArray()) {
+                return null;
+            }
+            int markerIndex = -1;
+            for (int i = 0; i < comments.size(); i++) {
+                String plain = adfToPlainText(comments.get(i).path("body"));
+                if (plain.contains("blink-question:" + questionId)) {
+                    markerIndex = i;
+                }
+            }
+            if (markerIndex < 0) {
+                return null;
+            }
+            for (int i = markerIndex + 1; i < comments.size(); i++) {
+                JsonNode comment = comments.get(i);
+                String authorId = comment.path("author").path("accountId").asText("");
+                if (blinkAccountId != null && blinkAccountId.equals(authorId)) {
+                    continue;
+                }
+                String plain = adfToPlainText(comment.path("body")).trim();
+                if (plain.isBlank()) {
+                    continue;
+                }
+                String author = comment.path("author").path("displayName").asText("Unknown");
+                String commentId = comment.path("id").asText(null);
+                String created = comment.path("created").asText(null);
+                return new JiraCommentPollResponse.Reply(questionId, issueKey, commentId, author, plain, created);
+            }
+        } catch (ApiException ex) {
+            throw ex;
+        } catch (Exception ex) {
+            throw new ApiException(HttpStatus.BAD_GATEWAY, "Could not parse Jira comments for " + issueKey + ".");
+        }
+        return null;
+    }
+
+    /** Package-visible for unit tests. */
+    static String adfToPlainText(JsonNode node) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return "";
+        }
+        if (node.isTextual()) {
+            return node.asText("");
+        }
+        StringBuilder sb = new StringBuilder();
+        if ("text".equals(node.path("type").asText("")) && node.path("text").isTextual()) {
+            sb.append(node.path("text").asText(""));
+        }
+        JsonNode content = node.path("content");
+        if (content.isArray()) {
+            for (JsonNode child : content) {
+                String part = adfToPlainText(child);
+                if (!part.isBlank()) {
+                    if (!sb.isEmpty()) {
+                        sb.append('\n');
+                    }
+                    sb.append(part);
+                }
+            }
+        }
+        return sb.toString();
     }
 
     private JiraCreatedIssue createJiraIssue(
