@@ -204,6 +204,9 @@ class IntegrationConnectServiceTest {
         var oauthService = new IntegrationConnectService(new IntegrationHttpGateway() {
             @Override
             public IntegrationHttpResponse get(String url, Map<String, String> headers) {
+                if (url.contains("api.github.com/user/orgs")) {
+                    return json(200, "[{\"login\":\"acme\",\"avatar_url\":\"https://example/acme.png\"}]");
+                }
                 if (url.contains("api.github.com/user")) {
                     return json(200, "{\"login\":\"octocat\",\"name\":\"The Octocat\"}");
                 }
@@ -234,6 +237,31 @@ class IntegrationConnectServiceTest {
         assertThat(store.find(42L, "github").orElseThrow().accessToken()).isEqualTo("gho_oauth_token");
         assertThat(store.find(42L, "github").orElseThrow().authType()).isEqualTo("oauth");
         assertThat(store.find(42L, "github").orElseThrow().organization()).isEqualTo("acme");
+        assertThat(exchangeRes.organization()).isEqualTo("acme");
+        assertThat(exchangeRes.organizations()).extracting(com.talentserv.blink.dto.GithubOrgDto::login)
+                .containsExactly("octocat", "acme");
+    }
+
+    @Test
+    void githubListsPersonalAccountAndOrganizations() {
+        responses.put("https://api.github.com/user", json(200, "{\"login\":\"octocat\",\"avatar_url\":\"https://example/octo.png\"}"));
+        responses.put("https://api.github.com/user/orgs?per_page=100", json(200, "[{\"login\":\"acme\"},{\"login\":\"talent\"}]"));
+        MemoryProjectIntegrationStore store = new MemoryProjectIntegrationStore();
+        store.upsert(new com.talentserv.blink.dto.StoredIntegration(
+                42L, "github", "octocat", "https://github.com", null, "octocat", null, null,
+                null, null, null, null, "oauth", "gho_oauth_token", null, null
+        ));
+        IntegrationConnectService storedService = new IntegrationConnectService(
+                serviceGateway(),
+                new com.talentserv.blink.config.BlinkProperties(),
+                store
+        );
+
+        var orgs = storedService.fetchGithubOrgs(new com.talentserv.blink.dto.GithubOrgsRequest("42", null));
+
+        assertThat(orgs).extracting(com.talentserv.blink.dto.GithubOrgDto::login).containsExactly("octocat", "acme", "talent");
+        assertThat(orgs.get(0).personal()).isTrue();
+        assertThat(orgs.get(1).personal()).isFalse();
     }
 
     @Test

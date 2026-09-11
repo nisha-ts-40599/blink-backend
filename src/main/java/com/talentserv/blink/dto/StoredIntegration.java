@@ -29,4 +29,11 @@ public record StoredIntegration(
                 key, name, spaceKey, cloudId, authType, accessToken, refreshToken, expiresAt
         );
     }
+
+    public StoredIntegration withOrganization(String organization) {
+        return new StoredIntegration(
+                projectId, provider, account, baseUrl, email, username, organization, workspace,
+                projectKey, projectName, spaceKey, cloudId, authType, accessToken, refreshToken, expiresAt
+        );
+    }
 }

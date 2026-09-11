@@ -7,6 +7,7 @@ public record IntegrationBindingRequest(
         @NotBlank(message = "Provider is required") String provider,
         String projectKey,
         String projectName,
-        String spaceKey
+        String spaceKey,
+        String organization
 ) {
 }

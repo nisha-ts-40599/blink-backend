@@ -75,6 +75,18 @@ class OAuthRedirectResolverTest {
     }
 
     @Test
+    void canonicalizesLoopbackIpToLocalhostForGithubApps() {
+        String resolved = OAuthRedirectResolver.resolve(
+                "github",
+                "http://127.0.0.1:5173/api/integrations/github/oauth/callback",
+                "http://127.0.0.1:8090",
+                LOCAL,
+                "http://localhost:5173,http://127.0.0.1:5173"
+        );
+        assertThat(resolved).isEqualTo(LOCAL);
+    }
+
+    @Test
     void publicApiBasePrefersForwardedHeaders() {
         String base = OAuthRedirectResolver.publicApiBase(
                 "https",

@@ -39,6 +39,8 @@ import com.talentserv.blink.dto.JiraCreatedIssue;
 import com.talentserv.blink.dto.JiraEpicSpec;
 import com.talentserv.blink.dto.GithubOAuthExchangeRequest;
 import com.talentserv.blink.dto.GithubOAuthUrlResponse;
+import com.talentserv.blink.dto.GithubOrgDto;
+import com.talentserv.blink.dto.GithubOrgsRequest;
 import com.talentserv.blink.dto.JiraOAuthExchangeRequest;
 import com.talentserv.blink.dto.JiraOAuthUrlResponse;
 import com.talentserv.blink.dto.JiraProjectDto;
@@ -182,7 +184,7 @@ public class IntegrationConnectService {
                 "https://github.com",
                 null,
                 identified.account(),
-                trimToNull(request.organization()),
+                identified.organization(),
                 null,
                 null,
                 null,
@@ -388,6 +390,18 @@ public class IntegrationConnectService {
                 stored != null && "oauth".equals(stored.authType()) ? stored.accessToken() : null
         );
         return fetchJiraProjectsInternal(baseUrl, email, token, cloudId, accessToken);
+    }
+
+    public List<GithubOrgDto> fetchGithubOrgs(GithubOrgsRequest request) {
+        if (request == null) {
+            return List.of();
+        }
+        StoredIntegration stored = load(parseProjectId(request.projectId()), "github").orElse(null);
+        String token = firstNonBlank(request.token(), stored == null ? null : stored.accessToken());
+        if (token == null || token.isBlank()) {
+            return List.of();
+        }
+        return fetchGithubOrgsInternal(token);
     }
 
     private List<JiraProjectDto> fetchJiraProjectsInternal(
@@ -918,12 +932,16 @@ public class IntegrationConnectService {
                 githubHeaders(token)
         );
         String account = firstText(user.body(), "login", "name");
+        List<GithubOrgDto> organizations = fetchGithubOrgsInternal(token);
         String org = trimToNull(organization);
         if (org != null) {
-            getJson(
-                    "https://api.github.com/orgs/" + encode(org),
-                    githubHeaders(token)
-            );
+            boolean known = organizations.stream().anyMatch(item -> !item.personal() && org.equalsIgnoreCase(item.login()));
+            if (!known) {
+                getJson(
+                        "https://api.github.com/orgs/" + encode(org),
+                        githubHeaders(token)
+                );
+            }
             return new IntegrationConnectResponse(
                     true,
                     "github",
@@ -935,22 +953,69 @@ public class IntegrationConnectService {
                     null,
                     authType,
                     token,
-                    List.of()
+                    List.of(),
+                    org,
+                    organizations
             );
         }
+        String detail = organizations.stream().anyMatch(item -> !item.personal())
+                ? "Connected as " + account + " (" + organizations.size() + " destinations available)"
+                : "Connected as " + account;
         return new IntegrationConnectResponse(
                 true,
                 "github",
                 account,
-                "Connected as " + account,
+                detail,
                 null,
                 null,
                 "https://github.com",
                 null,
                 authType,
                 token,
-                List.of()
+                List.of(),
+                null,
+                organizations
         );
+    }
+
+    private List<GithubOrgDto> fetchGithubOrgsInternal(String token) {
+        Map<String, String> headers = githubHeaders(token);
+        List<GithubOrgDto> organizations = new ArrayList<>();
+        try {
+            IntegrationHttpGateway.IntegrationHttpResponse profile = http.get("https://api.github.com/user", headers);
+            if (profile.status() >= 200 && profile.status() < 300) {
+                String login = firstText(profile.body(), "login");
+                String avatar = firstText(profile.body(), "avatar_url");
+                if (!login.isBlank()) {
+                    organizations.add(new GithubOrgDto(login, "Personal (" + login + ")", avatar, true));
+                }
+            }
+        } catch (Exception ex) {
+            log.warn("Could not retrieve GitHub user for organization list: {}", ex.toString());
+        }
+        try {
+            IntegrationHttpGateway.IntegrationHttpResponse res = http.get(
+                    "https://api.github.com/user/orgs?per_page=100",
+                    headers
+            );
+            if (res.status() == 200 && res.body() != null && !res.body().isBlank()) {
+                JsonNode root = MAPPER.readTree(res.body());
+                if (root.isArray()) {
+                    for (JsonNode item : root) {
+                        String login = item.path("login").asText("");
+                        if (login.isBlank()) {
+                            continue;
+                        }
+                        String name = firstNonBlank(item.path("name").asText(""), login);
+                        String avatar = item.path("avatar_url").asText("");
+                        organizations.add(new GithubOrgDto(login, name, avatar, false));
+                    }
+                }
+            }
+        } catch (Exception ex) {
+            log.warn("Could not retrieve GitHub organizations: {}", ex.toString());
+        }
+        return organizations;
     }
 
     private IntegrationConnectResponse connectBitbucket(IntegrationConnectRequest request) {
@@ -1154,6 +1219,9 @@ public class IntegrationConnectService {
                 trimToNull(request.projectKey()) == null ? stored.projectKey() : request.projectKey().trim(),
                 firstNonBlank(request.projectName(), stored.projectName())
         );
+        if ("github".equals(provider)) {
+            updated = updated.withOrganization(trimToNull(request.organization()));
+        }
         if ("confluence".equals(provider) && trimToNull(request.spaceKey()) != null) {
             updated = new StoredIntegration(
                     updated.projectId(), updated.provider(), updated.account(), updated.baseUrl(), updated.email(),
@@ -1174,6 +1242,8 @@ public class IntegrationConnectService {
                 updated.cloudId(),
                 updated.authType(),
                 null,
+                List.of(),
+                updated.organization(),
                 List.of()
         );
     }
@@ -1263,7 +1333,9 @@ public class IntegrationConnectService {
                 result.cloudId(),
                 result.authType(),
                 null,
-                result.projects() == null ? List.of() : result.projects()
+                result.projects() == null ? List.of() : result.projects(),
+                result.organization(),
+                result.organizations() == null ? List.of() : result.organizations()
         );
     }
 
