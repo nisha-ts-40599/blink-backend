@@ -12,6 +12,10 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.talentserv.blink.dto.CreateRepositoriesRequest;
 import com.talentserv.blink.dto.CreateRepositoriesResponse;
+import com.talentserv.blink.dto.FigmaOAuthExchangeRequest;
+import com.talentserv.blink.dto.FigmaOAuthUrlResponse;
+import com.talentserv.blink.dto.FigmaProjectsRequest;
+import com.talentserv.blink.dto.FigmaTeamsRequest;
 import com.talentserv.blink.dto.GithubOAuthExchangeRequest;
 import com.talentserv.blink.dto.GithubOAuthUrlResponse;
 import com.talentserv.blink.dto.GithubOrgDto;
@@ -79,6 +83,19 @@ public class IntegrationConnectController {
         return integrationConnectService.exchangeGithubOAuth(request);
     }
 
+    @GetMapping("/figma/oauth/url")
+    public FigmaOAuthUrlResponse getFigmaOAuthUrl(
+            @RequestParam(required = false) String redirectUri,
+            HttpServletRequest request
+    ) {
+        return integrationConnectService.getFigmaOAuthUrl(redirectUri, publicApiBase(request));
+    }
+
+    @PostMapping("/figma/oauth/exchange")
+    public IntegrationConnectResponse exchangeFigmaOAuth(@Valid @RequestBody FigmaOAuthExchangeRequest request) {
+        return integrationConnectService.exchangeFigmaOAuth(request);
+    }
+
     @PostMapping("/jira/projects")
     public List<JiraProjectDto> fetchJiraProjects(@RequestBody JiraProjectsRequest request) {
         return integrationConnectService.fetchJiraProjects(request);
@@ -87,6 +104,16 @@ public class IntegrationConnectController {
     @PostMapping("/github/orgs")
     public List<GithubOrgDto> fetchGithubOrgs(@RequestBody GithubOrgsRequest request) {
         return integrationConnectService.fetchGithubOrgs(request);
+    }
+
+    @PostMapping("/figma/teams")
+    public List<GithubOrgDto> fetchFigmaTeams(@RequestBody FigmaTeamsRequest request) {
+        return integrationConnectService.fetchFigmaTeams(request);
+    }
+
+    @PostMapping("/figma/projects")
+    public List<JiraProjectDto> fetchFigmaProjects(@RequestBody FigmaProjectsRequest request) {
+        return integrationConnectService.fetchFigmaProjects(request);
     }
 
     @PostMapping("/jira/issues")
@@ -195,6 +222,59 @@ public class IntegrationConnectController {
                         } else {
                             if (code) {
                                 window.location.href = '/?github_code=' + encodeURIComponent(code);
+                            } else {
+                                document.getElementById('msg').innerText = error || 'Authorization failed.';
+                            }
+                        }
+                    </script>
+                </body>
+                </html>
+                """.formatted(safeCode, safeState, safeError);
+    }
+
+    @GetMapping(value = "/figma/oauth/callback", produces = MediaType.TEXT_HTML_VALUE)
+    public String figmaOAuthCallback(
+            @RequestParam(required = false) String code,
+            @RequestParam(required = false) String state,
+            @RequestParam(required = false) String error,
+            @RequestParam(name = "error_description", required = false) String errorDescription
+    ) {
+        String safeCode = code != null ? code.replace("\"", "\\\"").replace("'", "\\'") : "";
+        String safeState = state != null ? state.replace("\"", "\\\"").replace("'", "\\'") : "";
+        String safeError = error != null ? (error + (errorDescription != null ? ": " + errorDescription : "")).replace("\"", "\\\"").replace("'", "\\'") : "";
+
+        return """
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <title>Figma Authorization</title>
+                    <style>
+                        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #0f172a; color: #f8fafc; text-align: center; }
+                        .card { padding: 2rem; border-radius: 12px; background: #1e293b; border: 1px solid #334155; max-width: 400px; }
+                        h2 { margin-top: 0; color: #38bdf8; }
+                    </style>
+                </head>
+                <body>
+                    <div class="card">
+                        <h2>Figma Connected</h2>
+                        <p id="msg">Completing authorization with Blink...</p>
+                    </div>
+                    <script>
+                        const code = "%s";
+                        const state = "%s";
+                        const error = "%s";
+                        if (window.opener) {
+                            window.opener.postMessage({
+                                type: 'FIGMA_OAUTH_RESPONSE',
+                                code: code || null,
+                                state: state || null,
+                                error: error || null
+                            }, '*');
+                            document.getElementById('msg').innerText = 'Closing popup window...';
+                            setTimeout(() => window.close(), 600);
+                        } else {
+                            if (code) {
+                                window.location.href = '/?figma_code=' + encodeURIComponent(code);
                             } else {
                                 document.getElementById('msg').innerText = error || 'Authorization failed.';
                             }

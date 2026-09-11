@@ -13,6 +13,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.time.Instant;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -37,6 +39,10 @@ import com.talentserv.blink.dto.JiraCreateIssuesRequest;
 import com.talentserv.blink.dto.JiraCreateIssuesResponse;
 import com.talentserv.blink.dto.JiraCreatedIssue;
 import com.talentserv.blink.dto.JiraEpicSpec;
+import com.talentserv.blink.dto.FigmaOAuthExchangeRequest;
+import com.talentserv.blink.dto.FigmaOAuthUrlResponse;
+import com.talentserv.blink.dto.FigmaProjectsRequest;
+import com.talentserv.blink.dto.FigmaTeamsRequest;
 import com.talentserv.blink.dto.GithubOAuthExchangeRequest;
 import com.talentserv.blink.dto.GithubOAuthUrlResponse;
 import com.talentserv.blink.dto.GithubOrgDto;
@@ -53,6 +59,9 @@ public class IntegrationConnectService {
 
     private static final Logger log = LoggerFactory.getLogger(IntegrationConnectService.class);
     private static final ObjectMapper MAPPER = JsonMapper.builder().build();
+    private static final Pattern FIGMA_TEAM_ID = Pattern.compile("(?:/files)?/team/(\\d+)");
+    private static final String FIGMA_DEFAULT_SCOPES =
+            "current_user:read,file_content:read,file_metadata:read,projects:read";
 
     private final IntegrationHttpGateway http;
     private final BlinkProperties properties;
@@ -81,6 +90,7 @@ public class IntegrationConnectService {
         String provider = request.provider().trim().toLowerCase(Locale.ROOT);
         IntegrationConnectResponse result = switch (provider) {
             case "github" -> connectGitHub(request);
+            case "figma" -> connectFigma(request);
             case "bitbucket" -> connectBitbucket(request);
             case "jira" -> connectJira(request);
             case "confluence" -> connectConfluence(request);
@@ -93,7 +103,7 @@ public class IntegrationConnectService {
                 result.baseUrl() != null ? result.baseUrl() : request.baseUrl(),
                 request.email(),
                 request.username(),
-                request.organization(),
+                firstNonBlank(result.organization(), request.organization()),
                 request.workspace(),
                 result.projectKey() != null ? result.projectKey() : request.projectKey(),
                 result.projectName(),
@@ -194,6 +204,106 @@ public class IntegrationConnectService {
                 accessToken,
                 null,
                 null
+        );
+        return redact(identified);
+    }
+
+    public FigmaOAuthUrlResponse getFigmaOAuthUrl() {
+        return getFigmaOAuthUrl(null, null);
+    }
+
+    public FigmaOAuthUrlResponse getFigmaOAuthUrl(String requestedRedirectUri, String publicApiBase) {
+        String clientId = properties.getFigmaClientId() == null ? "" : properties.getFigmaClientId().trim();
+        if (clientId.isBlank()) {
+            return new FigmaOAuthUrlResponse(
+                    false,
+                    null,
+                    null,
+                    null,
+                    "Figma OAuth is not configured. Set BLINK_FIGMA_CLIENT_ID and BLINK_FIGMA_CLIENT_SECRET on the server."
+            );
+        }
+        String redirectUri = resolveFigmaRedirectUri(requestedRedirectUri, publicApiBase);
+        String scopes = firstNonBlank(properties.getFigmaScopes(), FIGMA_DEFAULT_SCOPES);
+        String state = UUID.randomUUID().toString();
+        String url = "https://www.figma.com/oauth"
+                + "?client_id=" + encode(clientId)
+                + "&redirect_uri=" + encode(redirectUri)
+                + "&scope=" + encode(scopes)
+                + "&state=" + encode(state)
+                + "&response_type=code";
+        return new FigmaOAuthUrlResponse(true, url, clientId, redirectUri, "Ready for Figma authorization.");
+    }
+
+    public IntegrationConnectResponse exchangeFigmaOAuth(FigmaOAuthExchangeRequest request) {
+        String clientId = properties.getFigmaClientId() == null ? "" : properties.getFigmaClientId().trim();
+        String clientSecret = properties.getFigmaClientSecret() == null ? "" : properties.getFigmaClientSecret().trim();
+        if (clientId.isBlank() || clientSecret.isBlank()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Figma OAuth credentials (client ID/secret) are not configured on the server.");
+        }
+        String code = required(request.code(), "Authorization code is required.");
+        String redirectUri = resolveFigmaRedirectUri(request.redirectUri(), null);
+        log.info("Exchanging Figma OAuth code redirectUri={}", redirectUri);
+
+        String form = "redirect_uri=" + encode(redirectUri)
+                + "&code=" + encode(code)
+                + "&grant_type=authorization_code";
+        IntegrationHttpGateway.IntegrationHttpResponse tokenRes = http.post(
+                "https://api.figma.com/v1/oauth/token",
+                Map.of("Authorization", basic(clientId, clientSecret), "Accept", "application/json"),
+                form,
+                "application/x-www-form-urlencoded"
+        );
+        if (tokenRes.status() < 200 || tokenRes.status() >= 300) {
+            log.warn(
+                    "Figma OAuth token exchange failed: status={} body={}",
+                    tokenRes.status(),
+                    abbreviate(tokenRes.body(), 500)
+            );
+            String err = firstText(tokenRes.body(), "message", "error_description", "error");
+            throw new ApiException(
+                    HttpStatus.UNAUTHORIZED,
+                    "Failed to exchange Figma code: " + (err.isBlank() ? "HTTP " + tokenRes.status() : err)
+            );
+        }
+        String accessToken = firstText(tokenRes.body(), "access_token");
+        if (accessToken.isBlank()) {
+            String err = firstText(tokenRes.body(), "message", "error_description", "error");
+            throw new ApiException(
+                    HttpStatus.UNAUTHORIZED,
+                    "Figma response did not contain an access token"
+                            + (err.isBlank() ? "." : ": " + err)
+            );
+        }
+        String refreshToken = firstText(tokenRes.body(), "refresh_token");
+        Instant expiresAt = null;
+        try {
+            JsonNode tokenJsonNode = MAPPER.readTree(tokenRes.body());
+            int expiresIn = tokenJsonNode.path("expires_in").asInt(0);
+            if (expiresIn > 0) {
+                expiresAt = Instant.now().plusSeconds(expiresIn);
+            }
+        } catch (Exception ignored) {
+        }
+
+        IntegrationConnectResponse identified = identifyFigma(accessToken, request.organization(), "oauth");
+        persist(
+                parseProjectId(request.projectId()),
+                "figma",
+                identified.account(),
+                "https://www.figma.com",
+                null,
+                identified.account(),
+                identified.organization(),
+                null,
+                identified.projectKey(),
+                identified.projectName(),
+                null,
+                null,
+                "oauth",
+                accessToken,
+                refreshToken.isBlank() ? null : refreshToken,
+                expiresAt
         );
         return redact(identified);
     }
@@ -402,6 +512,31 @@ public class IntegrationConnectService {
             return List.of();
         }
         return fetchGithubOrgsInternal(token);
+    }
+
+    public List<GithubOrgDto> fetchFigmaTeams(FigmaTeamsRequest request) {
+        if (request == null) {
+            return List.of();
+        }
+        StoredIntegration stored = load(parseProjectId(request.projectId()), "figma").orElse(null);
+        String token = firstNonBlank(request.token(), stored == null ? null : stored.accessToken());
+        if (token == null || token.isBlank()) {
+            return List.of();
+        }
+        return fetchFigmaTeamsInternal(token);
+    }
+
+    public List<JiraProjectDto> fetchFigmaProjects(FigmaProjectsRequest request) {
+        if (request == null) {
+            return List.of();
+        }
+        StoredIntegration stored = load(parseProjectId(request.projectId()), "figma").orElse(null);
+        String token = firstNonBlank(request.token(), stored == null ? null : stored.accessToken());
+        String teamId = parseFigmaTeamId(firstNonBlank(request.organization(), stored == null ? null : stored.organization()));
+        if (token == null || token.isBlank() || teamId == null) {
+            return List.of();
+        }
+        return fetchFigmaProjectsInternal(token, teamId);
     }
 
     private List<JiraProjectDto> fetchJiraProjectsInternal(
@@ -1018,6 +1153,163 @@ public class IntegrationConnectService {
         return organizations;
     }
 
+    private IntegrationConnectResponse connectFigma(IntegrationConnectRequest request) {
+        String token = required(request.token(), "Figma personal access token is required.");
+        return identifyFigma(token, request.organization(), "token");
+    }
+
+    private IntegrationConnectResponse identifyFigma(String token, String organization, String authType) {
+        IntegrationHttpGateway.IntegrationHttpResponse me = getJson(
+                "https://api.figma.com/v1/me",
+                figmaHeaders(token)
+        );
+        String account = firstNonBlank(
+                firstText(me.body(), "handle", "email"),
+                firstText(me.body(), "id")
+        );
+        if (account == null || account.isBlank()) {
+            account = "Figma user";
+        }
+        List<GithubOrgDto> teams = parseFigmaTeams(me.body());
+        if (teams.isEmpty()) {
+            teams = fetchFigmaTeamsInternal(token);
+        }
+        String requestedTeamId = parseFigmaTeamId(organization);
+        List<GithubOrgDto> resolvedTeams = teams;
+        if (requestedTeamId != null) {
+            boolean known = resolvedTeams.stream().anyMatch(item -> requestedTeamId.equals(item.login()));
+            if (!known) {
+                resolvedTeams = new ArrayList<>(resolvedTeams);
+                resolvedTeams.add(new GithubOrgDto(requestedTeamId, "Team " + requestedTeamId, null, false));
+            }
+        }
+        final String teamId = requestedTeamId != null
+                ? requestedTeamId
+                : (resolvedTeams.size() == 1 ? resolvedTeams.get(0).login() : null);
+        List<JiraProjectDto> projects = teamId == null ? List.of() : fetchFigmaProjectsInternal(token, teamId);
+        String projectKey = projects.isEmpty() ? null : projects.get(0).key();
+        String projectName = projects.isEmpty() ? null : projects.get(0).name();
+        String teamName = teamId == null ? null : resolvedTeams.stream()
+                .filter(item -> teamId.equals(item.login()))
+                .map(GithubOrgDto::name)
+                .findFirst()
+                .orElse(teamId);
+        String detail;
+        if (teamId != null && projectName != null) {
+            detail = "Connected as " + account + " to " + teamName + " / " + projectName;
+        } else if (teamId != null) {
+            detail = "Connected as " + account + " to team " + teamName;
+        } else if (!resolvedTeams.isEmpty()) {
+            detail = "Connected as " + account + " (" + resolvedTeams.size() + " teams available)";
+        } else {
+            detail = "Connected as " + account + ". Paste a Figma team URL to bind a team.";
+        }
+        return new IntegrationConnectResponse(
+                true,
+                "figma",
+                account,
+                detail,
+                projectKey,
+                projectName,
+                "https://www.figma.com",
+                null,
+                authType,
+                token,
+                projects,
+                teamId,
+                resolvedTeams
+        );
+    }
+
+    private List<GithubOrgDto> fetchFigmaTeamsInternal(String token) {
+        try {
+            IntegrationHttpGateway.IntegrationHttpResponse me = http.get(
+                    "https://api.figma.com/v1/me",
+                    figmaHeaders(token)
+            );
+            if (me.status() >= 200 && me.status() < 300) {
+                return parseFigmaTeams(me.body());
+            }
+        } catch (Exception ex) {
+            log.warn("Could not retrieve Figma teams: {}", ex.toString());
+        }
+        return List.of();
+    }
+
+    private List<GithubOrgDto> parseFigmaTeams(String body) {
+        List<GithubOrgDto> teams = new ArrayList<>();
+        if (body == null || body.isBlank()) {
+            return teams;
+        }
+        try {
+            JsonNode root = MAPPER.readTree(body);
+            JsonNode list = root.path("teams");
+            if (!list.isArray()) {
+                list = root.path("data").path("teams");
+            }
+            if (list.isArray()) {
+                for (JsonNode item : list) {
+                    String id = item.path("id").asText("");
+                    if (id.isBlank()) {
+                        continue;
+                    }
+                    String name = firstNonBlank(item.path("name").asText(""), "Team " + id);
+                    String avatar = item.path("img_url").asText(item.path("thumbnailUrl").asText(""));
+                    teams.add(new GithubOrgDto(id, name, avatar.isBlank() ? null : avatar, false));
+                }
+            }
+        } catch (Exception ex) {
+            log.warn("Could not parse Figma teams: {}", ex.toString());
+        }
+        return teams;
+    }
+
+    private List<JiraProjectDto> fetchFigmaProjectsInternal(String token, String teamId) {
+        if (token == null || token.isBlank() || teamId == null || teamId.isBlank()) {
+            return List.of();
+        }
+        List<JiraProjectDto> projects = new ArrayList<>();
+        try {
+            IntegrationHttpGateway.IntegrationHttpResponse res = http.get(
+                    "https://api.figma.com/v1/teams/" + encode(teamId) + "/projects",
+                    figmaHeaders(token)
+            );
+            if (res.status() != 200 || res.body() == null || res.body().isBlank()) {
+                return projects;
+            }
+            JsonNode root = MAPPER.readTree(res.body());
+            JsonNode list = root.path("projects");
+            if (list.isArray()) {
+                for (JsonNode item : list) {
+                    String id = item.path("id").asText("");
+                    if (id.isBlank()) {
+                        continue;
+                    }
+                    String name = firstNonBlank(item.path("name").asText(""), id);
+                    projects.add(new JiraProjectDto(id, id, name, null, null));
+                }
+            }
+        } catch (Exception ex) {
+            log.warn("Could not retrieve Figma projects for team {}: {}", teamId, ex.toString());
+        }
+        return projects;
+    }
+
+    private String parseFigmaTeamId(String raw) {
+        String trimmed = trimToNull(raw);
+        if (trimmed == null) {
+            return null;
+        }
+        if (trimmed.matches("\\d+")) {
+            return trimmed;
+        }
+        Matcher matcher = FIGMA_TEAM_ID.matcher(trimmed);
+        if (matcher.find()) {
+            return matcher.group(1);
+        }
+        return trimmed;
+    }
+
     private IntegrationConnectResponse connectBitbucket(IntegrationConnectRequest request) {
         String username = required(request.username(), "Bitbucket username is required.");
         String token = required(request.token(), "Bitbucket app password is required.");
@@ -1222,6 +1514,9 @@ public class IntegrationConnectService {
         if ("github".equals(provider)) {
             updated = updated.withOrganization(trimToNull(request.organization()));
         }
+        if ("figma".equals(provider)) {
+            updated = updated.withOrganization(parseFigmaTeamId(request.organization()));
+        }
         if ("confluence".equals(provider) && trimToNull(request.spaceKey()) != null) {
             updated = new StoredIntegration(
                     updated.projectId(), updated.provider(), updated.account(), updated.baseUrl(), updated.email(),
@@ -1308,6 +1603,16 @@ public class IntegrationConnectService {
         );
     }
 
+    private String resolveFigmaRedirectUri(String requested, String publicApiBase) {
+        return OAuthRedirectResolver.resolve(
+                "figma",
+                requested,
+                publicApiBase,
+                properties.getFigmaRedirectUri(),
+                properties.getCorsOrigins()
+        );
+    }
+
     private String resolveJiraRedirectUri(String requested, String publicApiBase) {
         return OAuthRedirectResolver.resolve(
                 "jira",
@@ -1360,6 +1665,10 @@ public class IntegrationConnectService {
             }
         }
         return null;
+    }
+
+    private Map<String, String> figmaHeaders(String token) {
+        return Map.of("Authorization", "Bearer " + token);
     }
 
     private Map<String, String> githubHeaders(String token) {

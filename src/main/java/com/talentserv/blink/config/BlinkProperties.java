@@ -71,6 +71,13 @@ public class BlinkProperties {
     private String githubRedirectUri = "";
     private String githubScopes = "repo read:org user:email";
     /**
+     * Figma OAuth app credentials. Users sign in on Blink; PAT is the fallback.
+     */
+    private String figmaClientId = "";
+    private String figmaClientSecret = "";
+    private String figmaRedirectUri = "";
+    private String figmaScopes = "current_user:read,file_content:read,file_metadata:read,projects:read";
+    /**
      * Passphrase used to derive the AES key for per-project GitHub/Jira tokens.
      */
     private String integrationSecretKey = "";
@@ -257,6 +264,38 @@ public class BlinkProperties {
 
     public void setGithubScopes(String githubScopes) {
         this.githubScopes = githubScopes;
+    }
+
+    public String getFigmaClientId() {
+        return figmaClientId;
+    }
+
+    public void setFigmaClientId(String figmaClientId) {
+        this.figmaClientId = figmaClientId;
+    }
+
+    public String getFigmaClientSecret() {
+        return figmaClientSecret;
+    }
+
+    public void setFigmaClientSecret(String figmaClientSecret) {
+        this.figmaClientSecret = figmaClientSecret;
+    }
+
+    public String getFigmaRedirectUri() {
+        return figmaRedirectUri;
+    }
+
+    public void setFigmaRedirectUri(String figmaRedirectUri) {
+        this.figmaRedirectUri = figmaRedirectUri;
+    }
+
+    public String getFigmaScopes() {
+        return figmaScopes;
+    }
+
+    public void setFigmaScopes(String figmaScopes) {
+        this.figmaScopes = figmaScopes;
     }
 
     public String getIntegrationSecretKey() {
