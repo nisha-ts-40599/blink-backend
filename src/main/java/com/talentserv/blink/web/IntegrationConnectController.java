@@ -14,6 +14,8 @@ import com.talentserv.blink.dto.CreateRepositoriesRequest;
 import com.talentserv.blink.dto.CreateRepositoriesResponse;
 import com.talentserv.blink.dto.GithubOAuthExchangeRequest;
 import com.talentserv.blink.dto.GithubOAuthUrlResponse;
+import com.talentserv.blink.dto.GithubOrgDto;
+import com.talentserv.blink.dto.GithubOrgsRequest;
 import com.talentserv.blink.dto.IntegrationBindingRequest;
 import com.talentserv.blink.dto.IntegrationConnectRequest;
 import com.talentserv.blink.dto.IntegrationConnectResponse;
@@ -80,6 +82,11 @@ public class IntegrationConnectController {
     @PostMapping("/jira/projects")
     public List<JiraProjectDto> fetchJiraProjects(@RequestBody JiraProjectsRequest request) {
         return integrationConnectService.fetchJiraProjects(request);
+    }
+
+    @PostMapping("/github/orgs")
+    public List<GithubOrgDto> fetchGithubOrgs(@RequestBody GithubOrgsRequest request) {
+        return integrationConnectService.fetchGithubOrgs(request);
     }
 
     @PostMapping("/jira/issues")

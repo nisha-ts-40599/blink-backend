@@ -39,10 +39,10 @@ public final class OAuthRedirectResolver {
 
         for (String candidate : candidates) {
             if (isAllowed(candidate, path, allowedHosts, publicApiBase)) {
-                return candidate;
+                return canonicalizeLoopback(candidate);
             }
         }
-        return "http://localhost:5173" + path;
+        return canonicalizeLoopback("http://localhost:5173" + path);
     }
 
     public static String publicApiBase(String forwardedProto, String forwardedHost, String requestScheme, String requestHost) {
@@ -175,6 +175,21 @@ public final class OAuthRedirectResolver {
             return uri.getPort();
         }
         return "https".equalsIgnoreCase(uri.getScheme()) ? 443 : 80;
+    }
+
+    private static String canonicalizeLoopback(String uri) {
+        URI parsed = parse(uri);
+        if (parsed == null || parsed.getHost() == null || !isLoopbackHost(parsed.getHost())) {
+            return uri;
+        }
+        String scheme = parsed.getScheme() == null ? "http" : parsed.getScheme().toLowerCase(Locale.ROOT);
+        String path = parsed.getPath() == null ? "" : parsed.getPath();
+        int port = effectivePort(parsed);
+        boolean defaultPort = ("http".equals(scheme) && port == 80) || ("https".equals(scheme) && port == 443);
+        if (defaultPort) {
+            return scheme + "://localhost" + path;
+        }
+        return scheme + "://localhost:" + port + path;
     }
 
     private static boolean isLoopbackUri(String value) {

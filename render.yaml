@@ -18,6 +18,16 @@ services:
         value: https://github.com/AtulTalentServ/automation_sdlc.git
       - key: BLINK_CORS_ORIGINS
         sync: false
+      - key: BLINK_INTEGRATION_SECRET_KEY
+        sync: false
+      - key: BLINK_JIRA_CLIENT_ID
+        sync: false
+      - key: BLINK_JIRA_CLIENT_SECRET
+        sync: false
+      - key: BLINK_GITHUB_CLIENT_ID
+        sync: false
+      - key: BLINK_GITHUB_CLIENT_SECRET
+        sync: false
       - key: AWS_ACCESS_KEY_ID
         sync: false
       - key: AWS_SECRET_ACCESS_KEY
