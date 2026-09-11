@@ -78,4 +78,11 @@ blink:
   smtp-from: ${BLINK_SMTP_FROM:blink@localhost}
   smtp-start-tls: ${BLINK_SMTP_START_TLS:true}
   smtp-outbox-dir: ${BLINK_SMTP_OUTBOX_DIR:.blink-outbox}
+  login-allowed-domain: ${BLINK_LOGIN_ALLOWED_DOMAIN:talentserv.co.in}
+  otp-ttl: ${BLINK_OTP_TTL:5m}
+  otp-resend-cooldown: ${BLINK_OTP_RESEND_COOLDOWN:45s}
+  session-ttl: ${BLINK_SESSION_TTL:12h}
+  otp-max-attempts: ${BLINK_OTP_MAX_ATTEMPTS:5}
+  otp-reveal: ${BLINK_OTP_REVEAL:${BLINK_OTP_REVEAL_LOCALLY:false}}
+  login-gate: ${BLINK_LOGIN_GATE:}
 

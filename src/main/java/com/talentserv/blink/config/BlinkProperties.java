@@ -96,6 +96,25 @@ public class BlinkProperties {
     private boolean smtpStartTls = true;
     private String smtpOutboxDir = ".blink-outbox";
 
+    /**
+     * Sign-in is limited to this email domain (local-part @ domain).
+     */
+    private String loginAllowedDomain = "talentserv.co.in";
+    private Duration otpTtl = Duration.ofMinutes(5);
+    private Duration otpResendCooldown = Duration.ofSeconds(45);
+    private Duration sessionTtl = Duration.ofHours(12);
+    private int otpMaxAttempts = 5;
+    /**
+     * When true, the login API returns the OTP in the response so the UI can show it.
+     * Use only until SMTP works, then set {@code BLINK_OTP_REVEAL=false}.
+     */
+    private boolean otpReveal = false;
+    /**
+     * Shared access code required while {@link #otpReveal} is on, so a public URL cannot be used
+     * by strangers. Leave blank after SMTP works and reveal is off.
+     */
+    private String loginGate = "";
+
     public String getAutomationSdlcPath() {
         return automationSdlcPath;
     }
@@ -374,6 +393,66 @@ public class BlinkProperties {
 
     public void setSmtpOutboxDir(String smtpOutboxDir) {
         this.smtpOutboxDir = smtpOutboxDir;
+    }
+
+    public String getLoginAllowedDomain() {
+        return loginAllowedDomain;
+    }
+
+    public void setLoginAllowedDomain(String loginAllowedDomain) {
+        this.loginAllowedDomain = loginAllowedDomain;
+    }
+
+    public Duration getOtpTtl() {
+        return otpTtl;
+    }
+
+    public void setOtpTtl(Duration otpTtl) {
+        this.otpTtl = otpTtl;
+    }
+
+    public Duration getOtpResendCooldown() {
+        return otpResendCooldown;
+    }
+
+    public void setOtpResendCooldown(Duration otpResendCooldown) {
+        this.otpResendCooldown = otpResendCooldown;
+    }
+
+    public Duration getSessionTtl() {
+        return sessionTtl;
+    }
+
+    public void setSessionTtl(Duration sessionTtl) {
+        this.sessionTtl = sessionTtl;
+    }
+
+    public int getOtpMaxAttempts() {
+        return otpMaxAttempts;
+    }
+
+    public void setOtpMaxAttempts(int otpMaxAttempts) {
+        this.otpMaxAttempts = otpMaxAttempts;
+    }
+
+    public boolean isOtpReveal() {
+        return otpReveal;
+    }
+
+    public void setOtpReveal(boolean otpReveal) {
+        this.otpReveal = otpReveal;
+    }
+
+    public String getLoginGate() {
+        return loginGate;
+    }
+
+    public void setLoginGate(String loginGate) {
+        this.loginGate = loginGate;
+    }
+
+    public boolean loginGateRequired() {
+        return otpReveal || !blank(loginGate);
     }
 
     public boolean smtpConfigured() {

@@ -80,7 +80,8 @@ class ProjectControllerStakeholdersTest {
                 s3WorkspaceService,
                 agentRuntimeService,
                 projectGovernanceService,
-                properties
+                properties,
+                org.mockito.Mockito.mock(com.talentserv.blink.service.OtpLoginService.class)
         );
     }
 
@@ -107,7 +108,7 @@ class ProjectControllerStakeholdersTest {
                 null,
                 null
         );
-        when(projectService.create(any())).thenReturn(createdResponse);
+        when(projectService.create(any(), org.mockito.ArgumentMatchers.nullable(String.class))).thenReturn(createdResponse);
 
         ObjectNode agentResponse = MAPPER.createObjectNode();
         agentResponse.put("status", "warning");
@@ -121,7 +122,7 @@ class ProjectControllerStakeholdersTest {
         when(agentRuntimeService.invokeConfigureStakeholders(eq("Fitoyo"), eq("10"), eq(stakeholders), eq("apply")))
                 .thenReturn(agentResponse);
 
-        ProjectResponse result = controller.create(request);
+        ProjectResponse result = controller.create(null, request);
 
         assertThat(result.id()).isEqualTo(10L);
         assertThat(result.governanceStatus()).isEqualTo("preparing");

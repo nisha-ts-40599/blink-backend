@@ -1,0 +1,14 @@
+To: ada@talentserv.co.in
+Subject: Your Blink sign-in code
+Date: 2026-09-11T14:44:07.748019300Z
+Question-Ids: 
+
+Hi,
+
+Your Blink one-time password is:
+
+637163
+
+This code expires in 5 minutes. If you did not request it, you can ignore this email.
+
+— Blink

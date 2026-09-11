@@ -25,6 +25,9 @@ public class RenderDatabaseUrlEnvironmentPostProcessor implements EnvironmentPos
         if (onRender) {
             environment.addActiveProfile("render");
         }
+        if (environment.matchesProfiles("nodb")) {
+            return;
+        }
 
         String raw = firstNonBlank(
                 System.getenv("DATABASE_URL"),

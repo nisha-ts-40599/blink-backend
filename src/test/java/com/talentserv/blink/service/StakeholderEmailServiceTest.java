@@ -65,6 +65,30 @@ class StakeholderEmailServiceTest {
         assertThat(alice).contains("Beta?");
     }
 
+    @Test
+    void sendTextWritesOutboxWithoutSmtp() throws Exception {
+        BlinkProperties props = new BlinkProperties();
+        props.setSmtpHost("");
+        props.setSmtpOutboxDir(tempDir.toString());
+        StakeholderEmailService service = new StakeholderEmailService(props);
+
+        StakeholderEmailService.TextMailResult result = service.sendText(
+                "ada@talentserv.co.in",
+                "Your Blink sign-in code",
+                "123456"
+        );
+
+        assertThat(result.deliveryMode()).isEqualTo("outbox");
+        try (var stream = Files.list(tempDir)) {
+            assertThat(stream.filter(Files::isRegularFile).count()).isEqualTo(1);
+        }
+        String saved = Files.readString(
+                Files.list(tempDir).filter(Files::isRegularFile).findFirst().orElseThrow()
+        );
+        assertThat(saved).contains("123456");
+        assertThat(saved).contains("To: ada@talentserv.co.in");
+    }
+
     private static StakeholderQuestionSendItem item(String id, String email, String name) {
         return new StakeholderQuestionSendItem(
                 id,

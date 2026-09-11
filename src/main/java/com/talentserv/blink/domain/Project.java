@@ -24,6 +24,18 @@ public class Project extends AuditedEntity {
     @Column(name = "project_type", length = 30)
     private String projectType;
 
+    @Column(name = "owner_email", length = 255)
+    private String ownerEmail;
+
+    @Column(name = "wizard_step", length = 80)
+    private String wizardStep;
+
+    @Column(name = "wizard_completed_through")
+    private Integer wizardCompletedThrough;
+
+    @Column(name = "wizard_state_json", columnDefinition = "TEXT")
+    private String wizardStateJson;
+
     public Long getId() {
         return id;
     }
@@ -54,5 +66,37 @@ public class Project extends AuditedEntity {
 
     public void setProjectType(String projectType) {
         this.projectType = projectType;
+    }
+
+    public String getOwnerEmail() {
+        return ownerEmail;
+    }
+
+    public void setOwnerEmail(String ownerEmail) {
+        this.ownerEmail = ownerEmail;
+    }
+
+    public String getWizardStep() {
+        return wizardStep;
+    }
+
+    public void setWizardStep(String wizardStep) {
+        this.wizardStep = wizardStep;
+    }
+
+    public Integer getWizardCompletedThrough() {
+        return wizardCompletedThrough;
+    }
+
+    public void setWizardCompletedThrough(Integer wizardCompletedThrough) {
+        this.wizardCompletedThrough = wizardCompletedThrough;
+    }
+
+    public String getWizardStateJson() {
+        return wizardStateJson;
+    }
+
+    public void setWizardStateJson(String wizardStateJson) {
+        this.wizardStateJson = wizardStateJson;
     }
 }
