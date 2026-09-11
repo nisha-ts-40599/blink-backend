@@ -103,6 +103,9 @@ public final class McpJsonWriter {
         if (providers.contains("github")) {
             keys.add("github");
         }
+        if (providers.contains("figma")) {
+            keys.add("figma");
+        }
         if (providers.contains("jira")) {
             keys.add("jira");
         }
@@ -194,6 +197,10 @@ public final class McpJsonWriter {
             out.append("# After unzip: paste a GitHub PAT here for Cursor MCP (Blink login does not copy it).\n");
             out.append("GITHUB_PERSONAL_ACCESS_TOKEN=\n\n");
         }
+        if (providers.contains("figma")) {
+            out.append("# After unzip: paste a Figma PAT here for Cursor MCP (Blink login does not copy it).\n");
+            out.append("FIGMA_ACCESS_TOKEN=\n\n");
+        }
         if (providers.contains("jira")) {
             out.append("JIRA_URL=").append(valueOr(site.jiraUrl(), "https://YOUR_ORG.atlassian.net")).append('\n');
             out.append("JIRA_USERNAME=").append(valueOr(site.jiraUsername(), "you@example.com")).append('\n');
@@ -217,9 +224,9 @@ public final class McpJsonWriter {
             out.append("CONFLUENCE_API_TOKEN=\n");
             out.append("CONFLUENCE_CLOUD_ID=\n\n");
         }
-        if (!providers.contains("github") && !providers.contains("jira") && !providers.contains("confluence")) {
+        if (!providers.contains("github") && !providers.contains("figma") && !providers.contains("jira") && !providers.contains("confluence")) {
             out.append("# No cloud MCP servers were connected in the wizard.\n");
-            out.append("# Connect GitHub / Jira / Confluence and re-download, or add servers manually.\n");
+            out.append("# Connect GitHub / Figma / Jira / Confluence and re-download, or add servers manually.\n");
         }
         return out.toString();
     }
@@ -229,6 +236,9 @@ public final class McpJsonWriter {
         List<String> names = new ArrayList<>();
         if (providers.contains("github")) {
             names.add("GITHUB_PERSONAL_ACCESS_TOKEN");
+        }
+        if (providers.contains("figma")) {
+            names.add("FIGMA_ACCESS_TOKEN");
         }
         if (providers.contains("jira")) {
             names.add("JIRA_URL");
@@ -258,7 +268,7 @@ public final class McpJsonWriter {
                 continue;
             }
             String id = raw.trim().toLowerCase(Locale.ROOT);
-            if ("github".equals(id) || "jira".equals(id) || "confluence".equals(id)) {
+            if ("github".equals(id) || "figma".equals(id) || "jira".equals(id) || "confluence".equals(id)) {
                 out.add(id);
             }
         }
@@ -269,6 +279,7 @@ public final class McpJsonWriter {
         switch (key) {
             case "filesystem" -> appendFilesystem(json, os);
             case "github" -> appendGithub(json, os);
+            case "figma" -> appendFigma(json, os);
             case "jira" -> appendJira(json, os);
             case "confluence" -> appendConfluence(json, os);
             default -> {
@@ -308,6 +319,17 @@ public final class McpJsonWriter {
         json.append(",\n");
         json.append("      \"env\": {\n");
         json.append("        \"GITHUB_PERSONAL_ACCESS_TOKEN\": \"${env:GITHUB_PERSONAL_ACCESS_TOKEN}\"\n");
+        json.append("      }\n");
+        json.append("    }");
+    }
+
+    private static void appendFigma(StringBuilder json, OsProfile os) {
+        json.append("    \"figma\": {\n");
+        json.append("      \"command\": \"").append(escape(os.command())).append("\",\n");
+        appendArgsStart(json, os, "-y", "@modelcontextprotocol/server-figma");
+        json.append(",\n");
+        json.append("      \"env\": {\n");
+        json.append("        \"FIGMA_ACCESS_TOKEN\": \"${env:FIGMA_ACCESS_TOKEN}\"\n");
         json.append("      }\n");
         json.append("    }");
     }

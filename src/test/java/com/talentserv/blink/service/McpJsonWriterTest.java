@@ -22,12 +22,14 @@ class McpJsonWriterTest {
 
     @Test
     void includesConnectedServersMatchingAiSdlcShape() {
-        String json = McpJsonWriter.mcpJson(List.of("github", "jira", "confluence", "bitbucket"));
+        String json = McpJsonWriter.mcpJson(List.of("github", "jira", "confluence", "bitbucket", "figma"));
         assertThat(json).contains("\"github\"");
+        assertThat(json).contains("\"figma\"");
         assertThat(json).contains("\"jira\"");
         assertThat(json).contains("\"confluence\"");
         assertThat(json).doesNotContain("\"bitbucket\"");
         assertThat(json).contains("${env:GITHUB_PERSONAL_ACCESS_TOKEN}");
+        assertThat(json).contains("${env:FIGMA_ACCESS_TOKEN}");
         assertThat(json).contains("${env:JIRA_API_TOKEN}");
         assertThat(json).contains("${env:CONFLUENCE_API_TOKEN}");
         assertThat(json).contains("mcp-atlassian");
@@ -72,5 +74,7 @@ class McpJsonWriterTest {
         assertThat(example).doesNotContain("ghp_");
         assertThat(McpJsonWriter.requiredEnvVars(List.of("github")))
                 .containsExactly("GITHUB_PERSONAL_ACCESS_TOKEN");
+        assertThat(McpJsonWriter.requiredEnvVars(List.of("figma")))
+                .containsExactly("FIGMA_ACCESS_TOKEN");
     }
 }

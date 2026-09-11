@@ -289,6 +289,111 @@ class IntegrationConnectServiceTest {
     }
 
     @Test
+    void figmaOAuthUrlUnconfiguredWithoutClientId() {
+        var urlResponse = service.getFigmaOAuthUrl();
+        assertThat(urlResponse.configured()).isFalse();
+        assertThat(urlResponse.url()).isNull();
+    }
+
+    @Test
+    void figmaOAuthUrlConfiguredWhenClientIdPresent() {
+        var props = new com.talentserv.blink.config.BlinkProperties();
+        props.setFigmaClientId("figma-client");
+        props.setFigmaClientSecret("figma-secret");
+        var oauthService = new IntegrationConnectService(new IntegrationHttpGateway() {
+            @Override
+            public IntegrationHttpResponse get(String url, Map<String, String> headers) {
+                return new IntegrationHttpResponse(200, "{}");
+            }
+        }, props);
+
+        var urlResponse = oauthService.getFigmaOAuthUrl(
+                "https://blink-backend-af7x.onrender.com/api/integrations/figma/oauth/callback",
+                "https://blink-backend-af7x.onrender.com"
+        );
+        assertThat(urlResponse.configured()).isTrue();
+        assertThat(urlResponse.url()).contains("https://www.figma.com/oauth");
+        assertThat(urlResponse.url()).contains("client_id=figma-client");
+        assertThat(urlResponse.url()).contains("response_type=code");
+        assertThat(urlResponse.url()).contains("current_user%3Aread");
+        assertThat(urlResponse.url()).contains("file_content%3Aread");
+        assertThat(urlResponse.url()).contains("file_metadata%3Aread");
+        assertThat(urlResponse.url()).doesNotContain("folders");
+        assertThat(urlResponse.url()).doesNotContain("selections");
+        assertThat(urlResponse.url()).doesNotContain("projects");
+        assertThat(urlResponse.url()).doesNotContain("files%3Aread");
+        assertThat(urlResponse.redirectUri())
+                .isEqualTo("https://blink-backend-af7x.onrender.com/api/integrations/figma/oauth/callback");
+        assertThat(urlResponse.url()).doesNotContain("localhost");
+    }
+
+    @Test
+    void figmaOAuthExchangeSuccessListsTeamsAndProjects() {
+        var props = new com.talentserv.blink.config.BlinkProperties();
+        props.setFigmaClientId("figma-client");
+        props.setFigmaClientSecret("figma-secret");
+        props.setFigmaRedirectUri("http://localhost:5173/api/integrations/figma/oauth/callback");
+        MemoryProjectIntegrationStore store = new MemoryProjectIntegrationStore();
+        var oauthService = new IntegrationConnectService(new IntegrationHttpGateway() {
+            @Override
+            public IntegrationHttpResponse get(String url, Map<String, String> headers) {
+                if (url.contains("api.figma.com/v1/me")) {
+                    return json(200, "{\"id\":\"u1\",\"handle\":\"ada\",\"email\":\"ada@acme.com\",\"teams\":[{\"id\":\"111\",\"name\":\"Acme Design\"}]}");
+                }
+                if (url.contains("api.figma.com/v1/teams/111/projects")) {
+                    return json(200, "{\"projects\":[{\"id\":\"222\",\"name\":\"Mobile App\"}]}");
+                }
+                return new IntegrationHttpResponse(404, "");
+            }
+
+            @Override
+            public IntegrationHttpResponse post(String url, Map<String, String> headers, String jsonBody) {
+                if (url.contains("api.figma.com/v1/oauth/token")) {
+                    return json(200, "{\"access_token\":\"figma_oauth_token\",\"refresh_token\":\"figma_refresh\",\"expires_in\":7776000,\"user_id_string\":\"u1\"}");
+                }
+                return new IntegrationHttpResponse(404, "");
+            }
+        }, props, store);
+
+        var exchangeRes = oauthService.exchangeFigmaOAuth(
+                new com.talentserv.blink.dto.FigmaOAuthExchangeRequest("auth_code_figma", null, "42", "111")
+        );
+
+        assertThat(exchangeRes.connected()).isTrue();
+        assertThat(exchangeRes.account()).isEqualTo("ada");
+        assertThat(exchangeRes.authType()).isEqualTo("oauth");
+        assertThat(exchangeRes.token()).isNull();
+        assertThat(exchangeRes.organization()).isEqualTo("111");
+        assertThat(exchangeRes.projectKey()).isEqualTo("222");
+        assertThat(exchangeRes.projectName()).isEqualTo("Mobile App");
+        assertThat(exchangeRes.organizations()).extracting(com.talentserv.blink.dto.GithubOrgDto::login)
+                .containsExactly("111");
+        assertThat(store.find(42L, "figma").orElseThrow().accessToken()).isEqualTo("figma_oauth_token");
+        assertThat(store.find(42L, "figma").orElseThrow().organization()).isEqualTo("111");
+    }
+
+    @Test
+    void figmaParsesTeamIdFromUrl() {
+        responses.put("https://api.figma.com/v1/me", json(200, "{\"handle\":\"ada\"}"));
+        responses.put("https://api.figma.com/v1/teams/987654321/projects", json(200, "{\"projects\":[]}"));
+        var result = service.connect(new IntegrationConnectRequest(
+                "figma",
+                "42",
+                null,
+                "figd_token",
+                null,
+                null,
+                "https://www.figma.com/files/team/987654321/Acme-Design",
+                null,
+                null,
+                null
+        ));
+        assertThat(result.connected()).isTrue();
+        assertThat(result.organization()).isEqualTo("987654321");
+        assertThat(result.detail()).contains("987654321");
+    }
+
+    @Test
     void jiraOAuthExchangeSuccess() {
         var props = new com.talentserv.blink.config.BlinkProperties();
         props.setJiraClientId("my-client-id");
