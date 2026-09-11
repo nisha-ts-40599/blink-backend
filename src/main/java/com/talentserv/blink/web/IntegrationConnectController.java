@@ -29,6 +29,10 @@ import com.talentserv.blink.dto.JiraProjectDto;
 import com.talentserv.blink.dto.JiraProjectsRequest;
 import com.talentserv.blink.dto.JiraCreateIssuesRequest;
 import com.talentserv.blink.dto.JiraCreateIssuesResponse;
+import com.talentserv.blink.dto.JiraCommentCreateRequest;
+import com.talentserv.blink.dto.JiraCommentCreateResponse;
+import com.talentserv.blink.dto.JiraCommentPollRequest;
+import com.talentserv.blink.dto.JiraCommentPollResponse;
 import com.talentserv.blink.dto.JiraEpicSpec;
 import com.talentserv.blink.dto.JiraStorySpec;
 import com.talentserv.blink.service.IntegrationConnectService;
@@ -119,6 +123,16 @@ public class IntegrationConnectController {
     @PostMapping("/jira/issues")
     public JiraCreateIssuesResponse createJiraIssues(@Valid @RequestBody JiraCreateIssuesRequest request) {
         return integrationConnectService.createJiraIssues(request);
+    }
+
+    @PostMapping("/jira/comments")
+    public JiraCommentCreateResponse createJiraComment(@Valid @RequestBody JiraCommentCreateRequest request) {
+        return integrationConnectService.createJiraComment(request);
+    }
+
+    @PostMapping("/jira/comments/poll")
+    public JiraCommentPollResponse pollJiraComments(@Valid @RequestBody JiraCommentPollRequest request) {
+        return integrationConnectService.pollJiraComments(request);
     }
 
     @PostMapping("/binding")

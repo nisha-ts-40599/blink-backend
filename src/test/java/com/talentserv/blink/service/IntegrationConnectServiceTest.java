@@ -687,6 +687,118 @@ class IntegrationConnectServiceTest {
         assertThat(result.repositories().get(0).status()).isEqualTo("created");
     }
 
+    @Test
+    void createJiraCommentPostsAdfWithBlinkMarker() {
+        List<String[]> posts = new java.util.ArrayList<>();
+        var commenting = new IntegrationConnectService(new IntegrationHttpGateway() {
+            @Override
+            public IntegrationHttpResponse get(String url, Map<String, String> headers) {
+                return json(404, "");
+            }
+
+            @Override
+            public IntegrationHttpResponse post(String url, Map<String, String> headers, String jsonBody) {
+                posts.add(new String[] {url, jsonBody});
+                if (url.contains("/rest/api/3/issue/FIT-1/comment")) {
+                    return json(201, "{\"id\":\"10001\"}");
+                }
+                return json(404, "");
+            }
+        });
+
+        var result = commenting.createJiraComment(new com.talentserv.blink.dto.JiraCommentCreateRequest(
+                null,
+                "https://acme.atlassian.net",
+                "ada@acme.com",
+                "token",
+                null,
+                null,
+                "FIT-1",
+                "Please confirm MFA choice.",
+                "q-42"
+        ));
+
+        assertThat(result.status()).isEqualTo("ok");
+        assertThat(result.commentId()).isEqualTo("10001");
+        assertThat(result.blinkQuestionId()).isEqualTo("q-42");
+        assertThat(posts).hasSize(1);
+        assertThat(posts.get(0)[1]).contains("blink-question:q-42");
+        assertThat(posts.get(0)[1]).contains("Please confirm MFA choice.");
+    }
+
+    @Test
+    void pollJiraCommentsReturnsNextReplyAfterMarkerExcludingBlinkAccount() {
+        String commentsJson = """
+                {
+                  "comments": [
+                    {
+                      "id": "1",
+                      "created": "2026-01-01T00:00:00.000+0000",
+                      "author": {"accountId": "blink-bot", "displayName": "Blink"},
+                      "body": {"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"<!-- blink-question:q-9 -->"}]}]}
+                    },
+                    {
+                      "id": "2",
+                      "created": "2026-01-01T01:00:00.000+0000",
+                      "author": {"accountId": "blink-bot", "displayName": "Blink"},
+                      "body": {"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"Follow-up from Blink"}]}]}
+                    },
+                    {
+                      "id": "3",
+                      "created": "2026-01-01T02:00:00.000+0000",
+                      "author": {"accountId": "person-1", "displayName": "Ada"},
+                      "body": {"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"Use TOTP for MFA."}]}]}
+                    }
+                  ]
+                }
+                """;
+        var polling = new IntegrationConnectService(new IntegrationHttpGateway() {
+            @Override
+            public IntegrationHttpResponse get(String url, Map<String, String> headers) {
+                if (url.endsWith("/rest/api/3/myself")) {
+                    return json(200, "{\"accountId\":\"blink-bot\",\"displayName\":\"Blink\"}");
+                }
+                if (url.contains("/rest/api/3/issue/FIT-9/comment")) {
+                    return json(200, commentsJson);
+                }
+                return json(404, "");
+            }
+
+            @Override
+            public IntegrationHttpResponse post(String url, Map<String, String> headers, String jsonBody) {
+                return json(404, "");
+            }
+        });
+
+        var result = polling.pollJiraComments(new com.talentserv.blink.dto.JiraCommentPollRequest(
+                null,
+                "https://acme.atlassian.net",
+                "ada@acme.com",
+                "token",
+                null,
+                null,
+                List.of(new com.talentserv.blink.dto.JiraCommentPollRequest.PollItem("FIT-9", "q-9"))
+        ));
+
+        assertThat(result.replies()).hasSize(1);
+        assertThat(result.replies().get(0).blinkQuestionId()).isEqualTo("q-9");
+        assertThat(result.replies().get(0).author()).isEqualTo("Ada");
+        assertThat(result.replies().get(0).body()).contains("Use TOTP for MFA.");
+        assertThat(result.replies().get(0).commentId()).isEqualTo("3");
+    }
+
+    @Test
+    void adfToPlainTextFlattensParagraphs() throws Exception {
+        var mapper = tools.jackson.databind.json.JsonMapper.builder().build();
+        var node = mapper.readTree("""
+                {"type":"doc","content":[
+                  {"type":"paragraph","content":[{"type":"text","text":"Hello"}]},
+                  {"type":"paragraph","content":[{"type":"text","text":"World"}]}
+                ]}
+                """);
+        assertThat(IntegrationConnectService.adfToPlainText(node)).isEqualTo("Hello\nWorld");
+    }
+
     private IntegrationHttpGateway serviceGateway() {
         return new IntegrationHttpGateway() {
             @Override

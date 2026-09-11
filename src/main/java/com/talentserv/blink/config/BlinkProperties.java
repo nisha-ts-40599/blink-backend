@@ -84,6 +84,18 @@ public class BlinkProperties {
      */
     private String integrationSecretKey = "";
 
+    /**
+     * SMTP for stakeholder question emails. When host is blank, messages are written to
+     * {@link #smtpOutboxDir} (outbox mode) so local demos work without a mail server.
+     */
+    private String smtpHost = "";
+    private int smtpPort = 587;
+    private String smtpUsername = "";
+    private String smtpPassword = "";
+    private String smtpFrom = "blink@localhost";
+    private boolean smtpStartTls = true;
+    private String smtpOutboxDir = ".blink-outbox";
+
     public String getAutomationSdlcPath() {
         return automationSdlcPath;
     }
@@ -306,6 +318,66 @@ public class BlinkProperties {
 
     public void setIntegrationSecretKey(String integrationSecretKey) {
         this.integrationSecretKey = integrationSecretKey;
+    }
+
+    public String getSmtpHost() {
+        return smtpHost;
+    }
+
+    public void setSmtpHost(String smtpHost) {
+        this.smtpHost = smtpHost;
+    }
+
+    public int getSmtpPort() {
+        return smtpPort;
+    }
+
+    public void setSmtpPort(int smtpPort) {
+        this.smtpPort = smtpPort;
+    }
+
+    public String getSmtpUsername() {
+        return smtpUsername;
+    }
+
+    public void setSmtpUsername(String smtpUsername) {
+        this.smtpUsername = smtpUsername;
+    }
+
+    public String getSmtpPassword() {
+        return smtpPassword;
+    }
+
+    public void setSmtpPassword(String smtpPassword) {
+        this.smtpPassword = smtpPassword;
+    }
+
+    public String getSmtpFrom() {
+        return smtpFrom;
+    }
+
+    public void setSmtpFrom(String smtpFrom) {
+        this.smtpFrom = smtpFrom;
+    }
+
+    public boolean isSmtpStartTls() {
+        return smtpStartTls;
+    }
+
+    public void setSmtpStartTls(boolean smtpStartTls) {
+        this.smtpStartTls = smtpStartTls;
+    }
+
+    public String getSmtpOutboxDir() {
+        return smtpOutboxDir;
+    }
+
+    public void setSmtpOutboxDir(String smtpOutboxDir) {
+        this.smtpOutboxDir = smtpOutboxDir;
+    }
+
+    public boolean smtpConfigured() {
+        return !blank(smtpHost);
     }
 
     public boolean s3Enabled() {
