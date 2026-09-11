@@ -36,6 +36,16 @@ public class DotEnvEnvironmentPostProcessor implements EnvironmentPostProcessor 
         Object profiles = values.get("SPRING_PROFILES_ACTIVE");
         if (profiles instanceof String profileValue && !profileValue.isBlank()) {
             values.putIfAbsent("spring.profiles.active", profileValue);
+            String[] names = java.util.Arrays.stream(profileValue.split(","))
+                    .map(String::trim)
+                    .filter(name -> !name.isBlank())
+                    .toArray(String[]::new);
+            if (names.length > 0) {
+                application.setAdditionalProfiles(names);
+                for (String name : names) {
+                    environment.addActiveProfile(name);
+                }
+            }
         }
         MapPropertySource source = new MapPropertySource("dotenv", values);
         if (environment.getPropertySources().contains(StandardEnvironment.SYSTEM_ENVIRONMENT_PROPERTY_SOURCE_NAME)) {

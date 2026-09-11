@@ -42,10 +42,12 @@ public class JpaProjectService implements ProjectService {
 
     @Override
     @Transactional
-    public ProjectResponse create(ProjectRequest request) {
+    public ProjectResponse create(ProjectRequest request, String ownerEmail) {
         AppUser actor = demoUserService.requireDemoUser();
         Project project = new Project();
         applyProjectFields(project, request);
+        WizardProgress.applyOwner(project, ownerEmail);
+        WizardProgress.apply(project, request);
         project.setCreatedBy(actor.getId());
         project.setUpdatedBy(actor.getId());
         project = projectRepository.save(project);
@@ -55,11 +57,13 @@ public class JpaProjectService implements ProjectService {
 
     @Override
     @Transactional
-    public ProjectResponse update(Long projectId, ProjectRequest request) {
+    public ProjectResponse update(Long projectId, ProjectRequest request, String ownerEmail) {
         AppUser actor = demoUserService.requireDemoUser();
         Project project = projectRepository.findById(projectId)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Project not found."));
         applyProjectFields(project, request);
+        WizardProgress.applyOwner(project, ownerEmail);
+        WizardProgress.apply(project, request);
         project.setUpdatedBy(actor.getId());
         project = projectRepository.save(project);
         replaceStakeholders(project.getId(), request.stakeholders(), actor.getId());
@@ -85,6 +89,17 @@ public class JpaProjectService implements ProjectService {
     public Project requireProject(Long projectId) {
         return projectRepository.findById(projectId)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Project not found."));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public ProjectResponse latestForOwner(String ownerEmail) {
+        if (ownerEmail == null || ownerEmail.isBlank()) {
+            return null;
+        }
+        return projectRepository.findFirstByOwnerEmailIgnoreCaseOrderByUpdatedAtDesc(ownerEmail.trim())
+                .map(this::toResponse)
+                .orElse(null);
     }
 
     private void applyProjectFields(Project project, ProjectRequest request) {
@@ -125,17 +140,12 @@ public class JpaProjectService implements ProjectService {
                         row.getPersonName(),
                         row.getPersonEmail()))
                 .toList();
-        return new ProjectResponse(
-                project.getId(),
-                project.getProjectName(),
+        return WizardProgress.toResponse(
+                project,
                 ProjectCodes.slug(project.getProjectName()),
-                project.getDescription(),
-                null,
                 toApiType(project.getProjectType()),
-                stakeholders,
-                null,
-                null,
-                null);
+                stakeholders
+        );
     }
 
     private static String toStorageType(String projectType) {

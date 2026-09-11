@@ -2,6 +2,8 @@ package com.talentserv.blink.dto;
 
 import java.util.List;
 
+import tools.jackson.databind.JsonNode;
+
 public record ProjectResponse(
         Long id,
         String projectName,
@@ -15,7 +17,12 @@ public record ProjectResponse(
         String workspaceStatus,
         List<String> sodWarnings,
         String nextCommand,
-        String governanceStatus
+        String governanceStatus,
+        String ownerEmail,
+        String wizardStep,
+        Integer wizardCompletedThrough,
+        JsonNode wizardState,
+        String wizardUpdatedAt
 ) {
     public ProjectResponse(
             Long id,
@@ -42,7 +49,12 @@ public record ProjectResponse(
                 workspaceStatus,
                 List.of(),
                 "/plan-product-scope",
-                "idle"
+                "idle",
+                null,
+                null,
+                null,
+                null,
+                null
         );
     }
 
@@ -60,7 +72,12 @@ public record ProjectResponse(
                 workspaceStatus,
                 sodWarnings,
                 nextCommand,
-                governanceStatus
+                governanceStatus,
+                ownerEmail,
+                wizardStep,
+                wizardCompletedThrough,
+                wizardState,
+                wizardUpdatedAt
         );
     }
 
@@ -82,7 +99,12 @@ public record ProjectResponse(
                 workspaceStatus,
                 sodWarnings == null ? List.of() : List.copyOf(sodWarnings),
                 nextCommand == null || nextCommand.isBlank() ? "/plan-product-scope" : nextCommand,
-                governanceStatus == null || governanceStatus.isBlank() ? "idle" : governanceStatus
+                governanceStatus == null || governanceStatus.isBlank() ? "idle" : governanceStatus,
+                ownerEmail,
+                wizardStep,
+                wizardCompletedThrough,
+                wizardState,
+                wizardUpdatedAt
         );
     }
 }

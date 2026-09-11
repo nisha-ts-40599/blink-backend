@@ -85,6 +85,27 @@ public class StakeholderEmailService {
         );
     }
 
+    public TextMailResult sendText(String to, String subject, String body) {
+        if (to == null || to.isBlank()) {
+            throw new IllegalArgumentException("Recipient is required.");
+        }
+        boolean smtp = properties.smtpConfigured();
+        if (smtp) {
+            sendSmtp(to, subject, body);
+            return new TextMailResult("smtp", null);
+        }
+        Path outbox = resolveOutboxDir();
+        try {
+            writeOutbox(outbox, to, subject, body, List.of());
+        } catch (IOException ex) {
+            throw new IllegalStateException("Could not write outbox mail.", ex);
+        }
+        return new TextMailResult("outbox", outbox.toAbsolutePath().toString());
+    }
+
+    public record TextMailResult(String deliveryMode, String outboxDir) {
+    }
+
     /** Visible for unit tests — groups by trimmed lower-case recipient email. */
     static Map<String, List<StakeholderQuestionSendItem>> groupByRecipient(List<StakeholderQuestionSendItem> questions) {
         Map<String, List<StakeholderQuestionSendItem>> grouped = new LinkedHashMap<>();

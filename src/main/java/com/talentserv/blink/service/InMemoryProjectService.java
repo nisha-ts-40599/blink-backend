@@ -2,7 +2,9 @@ package com.talentserv.blink.service;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ConcurrentHashMap;
@@ -84,20 +86,21 @@ public class InMemoryProjectService implements ProjectService {
     }
 
     @Override
-    public ProjectResponse create(ProjectRequest request) {
+    public ProjectResponse create(ProjectRequest request, String ownerEmail) {
         long id = projectIds.getAndIncrement();
-        StoredProject stored = store(id, request);
+        StoredProject stored = store(id, request, ownerEmail, null);
         projects.put(id, stored);
         persist();
         return toResponse(stored);
     }
 
     @Override
-    public ProjectResponse update(Long projectId, ProjectRequest request) {
-        if (!projects.containsKey(projectId)) {
+    public ProjectResponse update(Long projectId, ProjectRequest request, String ownerEmail) {
+        StoredProject existing = projects.get(projectId);
+        if (existing == null) {
             throw new ApiException(HttpStatus.NOT_FOUND, "Project not found.");
         }
-        StoredProject stored = store(projectId, request);
+        StoredProject stored = store(projectId, request, ownerEmail, existing);
         projects.put(projectId, stored);
         persist();
         return toResponse(stored);
@@ -118,6 +121,22 @@ public class InMemoryProjectService implements ProjectService {
         return requireStored(projectId).project();
     }
 
+    @Override
+    public ProjectResponse latestForOwner(String ownerEmail) {
+        if (ownerEmail == null || ownerEmail.isBlank()) {
+            return null;
+        }
+        String email = ownerEmail.trim().toLowerCase(Locale.ROOT);
+        return projects.values().stream()
+                .filter(row -> email.equalsIgnoreCase(row.project().getOwnerEmail()))
+                .max(Comparator.comparing(row -> {
+                    LocalDateTime updated = row.project().getUpdatedAt();
+                    return updated == null ? LocalDateTime.MIN : updated;
+                }))
+                .map(this::toResponse)
+                .orElse(null);
+    }
+
     private StoredProject requireStored(Long projectId) {
         StoredProject stored = projects.get(projectId);
         if (stored == null) {
@@ -126,12 +145,18 @@ public class InMemoryProjectService implements ProjectService {
         return stored;
     }
 
-    private StoredProject store(Long id, ProjectRequest request) {
-        Project project = new Project();
+    private StoredProject store(Long id, ProjectRequest request, String ownerEmail, StoredProject existing) {
+        Project project = existing == null ? new Project() : existing.project();
         project.setId(id);
         project.setProjectName(request.projectName().trim());
         project.setDescription(blankToNull(request.description()));
         project.setProjectType(toStorageType(request.projectType()));
+        if (existing == null) {
+            project.setCreatedAt(LocalDateTime.now());
+        }
+        project.setUpdatedAt(LocalDateTime.now());
+        WizardProgress.applyOwner(project, ownerEmail);
+        WizardProgress.apply(project, request);
         List<StakeholderResponse> stakeholders = new ArrayList<>();
         for (StakeholderRequest row : request.stakeholders()) {
             String roleCode = row.roleCode().trim().toLowerCase(Locale.ROOT);
@@ -147,17 +172,12 @@ public class InMemoryProjectService implements ProjectService {
 
     private ProjectResponse toResponse(StoredProject stored) {
         Project project = stored.project();
-        return new ProjectResponse(
-                project.getId(),
-                project.getProjectName(),
+        return WizardProgress.toResponse(
+                project,
                 ProjectCodes.slug(project.getProjectName()),
-                project.getDescription(),
-                null,
                 toApiType(project.getProjectType()),
-                stored.stakeholders(),
-                null,
-                null,
-                null);
+                stored.stakeholders()
+        );
     }
 
     private synchronized void persist() {
@@ -180,7 +200,12 @@ public class InMemoryProjectService implements ProjectService {
                 project.getProjectName(),
                 project.getDescription(),
                 project.getProjectType(),
-                stored.stakeholders()
+                stored.stakeholders(),
+                project.getOwnerEmail(),
+                project.getWizardStep(),
+                project.getWizardCompletedThrough(),
+                project.getWizardStateJson(),
+                project.getUpdatedAt() == null ? null : project.getUpdatedAt().toString()
         );
     }
 
@@ -190,6 +215,17 @@ public class InMemoryProjectService implements ProjectService {
         project.setProjectName(row.projectName);
         project.setDescription(row.description);
         project.setProjectType(row.projectType);
+        project.setOwnerEmail(row.ownerEmail);
+        project.setWizardStep(row.wizardStep);
+        project.setWizardCompletedThrough(row.wizardCompletedThrough);
+        project.setWizardStateJson(row.wizardStateJson);
+        if (row.updatedAt != null && !row.updatedAt.isBlank()) {
+            try {
+                project.setUpdatedAt(LocalDateTime.parse(row.updatedAt));
+            } catch (Exception ignored) {
+                project.setUpdatedAt(LocalDateTime.now());
+            }
+        }
         List<StakeholderResponse> stakeholders = row.stakeholders == null ? List.of() : List.copyOf(row.stakeholders);
         return new StoredProject(project, stakeholders);
     }
@@ -230,7 +266,12 @@ public class InMemoryProjectService implements ProjectService {
             String projectName,
             String description,
             String projectType,
-            List<StakeholderResponse> stakeholders
+            List<StakeholderResponse> stakeholders,
+            String ownerEmail,
+            String wizardStep,
+            Integer wizardCompletedThrough,
+            String wizardStateJson,
+            String updatedAt
     ) {
     }
 }

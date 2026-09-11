@@ -17,6 +17,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -36,6 +37,7 @@ import com.talentserv.blink.dto.WorkspaceInventoryResponse;
 import com.talentserv.blink.dto.WorkspaceStatusResponse;
 import com.talentserv.blink.service.AgentRuntimeService;
 import com.talentserv.blink.service.McpJsonWriter;
+import com.talentserv.blink.service.OtpLoginService;
 import com.talentserv.blink.service.ProjectCodes;
 import com.talentserv.blink.service.ProjectGovernanceService;
 import com.talentserv.blink.service.ProjectService;
@@ -66,6 +68,7 @@ public class ProjectController {
     private final AgentRuntimeService agentRuntimeService;
     private final ProjectGovernanceService projectGovernanceService;
     private final BlinkProperties properties;
+    private final OtpLoginService otpLoginService;
 
     public ProjectController(
             ProjectService projectService,
@@ -75,7 +78,8 @@ public class ProjectController {
             S3WorkspaceService s3WorkspaceService,
             AgentRuntimeService agentRuntimeService,
             ProjectGovernanceService projectGovernanceService,
-            BlinkProperties properties
+            BlinkProperties properties,
+            OtpLoginService otpLoginService
     ) {
         this.projectService = projectService;
         this.requirementMarkdownService = requirementMarkdownService;
@@ -85,11 +89,24 @@ public class ProjectController {
         this.agentRuntimeService = agentRuntimeService;
         this.projectGovernanceService = projectGovernanceService;
         this.properties = properties;
+        this.otpLoginService = otpLoginService;
     }
 
     @GetMapping
     public List<ProjectResponse> list() {
         return projectService.list();
+    }
+
+    @GetMapping("/mine")
+    public ResponseEntity<ProjectResponse> mine(
+            @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorization
+    ) {
+        String email = otpLoginService.requireSession(authorization).email();
+        ProjectResponse found = projectService.latestForOwner(email);
+        if (found == null) {
+            return ResponseEntity.noContent().build();
+        }
+        return ResponseEntity.ok(projectGovernanceService.attachCurrent(attachWorkspace(found, false)));
     }
 
     @GetMapping("/workspace-tree")
@@ -113,14 +130,27 @@ public class ProjectController {
     }
 
     @PostMapping
-    public ProjectResponse create(@Valid @RequestBody ProjectRequest request) {
-        ProjectResponse created = attachWorkspace(projectService.create(request), true);
+    public ProjectResponse create(
+            @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorization,
+            @Valid @RequestBody ProjectRequest request
+    ) {
+        ProjectResponse created = attachWorkspace(
+                projectService.create(request, otpLoginService.optionalEmail(authorization)),
+                true
+        );
         return projectGovernanceService.applyStakeholderGovernance(created, request.stakeholders());
     }
 
     @PutMapping("/{id}")
-    public ProjectResponse update(@PathVariable Long id, @Valid @RequestBody ProjectRequest request) {
-        ProjectResponse updated = attachWorkspace(projectService.update(id, request), true);
+    public ProjectResponse update(
+            @PathVariable Long id,
+            @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorization,
+            @Valid @RequestBody ProjectRequest request
+    ) {
+        ProjectResponse updated = attachWorkspace(
+                projectService.update(id, request, otpLoginService.optionalEmail(authorization)),
+                true
+        );
         return projectGovernanceService.applyStakeholderGovernance(updated, request.stakeholders());
     }
 
