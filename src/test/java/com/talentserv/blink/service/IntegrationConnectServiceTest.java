@@ -315,6 +315,13 @@ class IntegrationConnectServiceTest {
         assertThat(urlResponse.url()).contains("https://www.figma.com/oauth");
         assertThat(urlResponse.url()).contains("client_id=figma-client");
         assertThat(urlResponse.url()).contains("response_type=code");
+        assertThat(urlResponse.url()).contains("current_user%3Aread");
+        assertThat(urlResponse.url()).contains("file_content%3Aread");
+        assertThat(urlResponse.url()).contains("file_metadata%3Aread");
+        assertThat(urlResponse.url()).doesNotContain("folders");
+        assertThat(urlResponse.url()).doesNotContain("selections");
+        assertThat(urlResponse.url()).doesNotContain("projects");
+        assertThat(urlResponse.url()).doesNotContain("files%3Aread");
         assertThat(urlResponse.redirectUri())
                 .isEqualTo("https://blink-backend-af7x.onrender.com/api/integrations/figma/oauth/callback");
         assertThat(urlResponse.url()).doesNotContain("localhost");

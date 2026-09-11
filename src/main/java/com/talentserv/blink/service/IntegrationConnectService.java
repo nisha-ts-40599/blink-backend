@@ -60,8 +60,14 @@ public class IntegrationConnectService {
     private static final Logger log = LoggerFactory.getLogger(IntegrationConnectService.class);
     private static final ObjectMapper MAPPER = JsonMapper.builder().build();
     private static final Pattern FIGMA_TEAM_ID = Pattern.compile("(?:/files)?/team/(\\d+)");
+    /**
+     * Subset every new Figma OAuth app can grant. Extra checkboxes on the Figma app
+     * are fine; requesting folders/selections/library/webhooks returns
+     * "Invalid scopes for app" when those are missing from the app.
+     */
     private static final String FIGMA_DEFAULT_SCOPES =
-            "current_user:read,file_content:read,file_metadata:read,projects:read";
+            "current_user:read,file_comments:read,file_comments:write,file_content:read,"
+                    + "file_dev_resources:read,file_dev_resources:write,file_metadata:read,file_versions:read";
 
     private final IntegrationHttpGateway http;
     private final BlinkProperties properties;

@@ -76,7 +76,9 @@ public class BlinkProperties {
     private String figmaClientId = "";
     private String figmaClientSecret = "";
     private String figmaRedirectUri = "";
-    private String figmaScopes = "current_user:read,file_content:read,file_metadata:read,projects:read";
+    private String figmaScopes =
+            "current_user:read,file_comments:read,file_comments:write,file_content:read,"
+                    + "file_dev_resources:read,file_dev_resources:write,file_metadata:read,file_versions:read";
     /**
      * Passphrase used to derive the AES key for per-project GitHub/Jira tokens.
      */
