@@ -1468,29 +1468,6 @@ func sourceStoryID(plain string) string {
 
 // --- OAuth / HTTP helpers ---
 
-func (s *Service) resolveRedirect(provider, requested, publicBase string) string {
-	path := "/api/integrations/" + provider + "/oauth/callback"
-	if configured := strings.TrimSpace(oauthConfigured(s.cfg, provider)); configured != "" {
-		if requested == "" {
-			return configured
-		}
-	}
-	if strings.TrimSpace(requested) != "" {
-		return strings.TrimSpace(requested)
-	}
-	if publicBase != "" {
-		base := strings.TrimRight(publicBase, "/")
-		if strings.HasSuffix(base, "/api") {
-			base = strings.TrimSuffix(base, "/api")
-		}
-		return base + path
-	}
-	if configured := strings.TrimSpace(oauthConfigured(s.cfg, provider)); configured != "" {
-		return configured
-	}
-	return "http://localhost:5173" + path
-}
-
 func oauthConfigured(cfg config.Config, provider string) string {
 	switch provider {
 	case "jira":
@@ -1566,17 +1543,23 @@ func writeOAuthHTML(w http.ResponseWriter, title, msgType string, r *http.Reques
 		}
 	}
 	errSafe := jsEscape(errMsg)
+	closeDelay := "1500"
+	if errSafe != "" {
+		closeDelay = "8000"
+	}
 	html := fmt.Sprintf(`<!DOCTYPE html>
 <html><head><title>%s Authorization</title>
 <style>body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#0f172a;color:#f8fafc;text-align:center}
 .card{padding:2rem;border-radius:12px;background:#1e293b;border:1px solid #334155;max-width:400px}h2{margin-top:0;color:#38bdf8}</style>
-</head><body><div class="card"><h2>%s Connected</h2><p id="msg">Completing authorization with Blink...</p></div>
+</head><body><div class="card"><h2>%s</h2><p id="msg">Completing authorization with Blink...</p></div>
 <script>
 const code="%s",state="%s",error="%s";
+const title=error?"Authorization failed":"%s Connected";
+document.querySelector('h2').innerText=title;
 if(window.opener){window.opener.postMessage({type:'%s',code:code||null,state:state||null,error:error||null},'*');
-document.getElementById('msg').innerText='Closing popup window...';setTimeout(()=>window.close(),600);}
+document.getElementById('msg').innerText=error?error:'Closing popup window...';setTimeout(()=>window.close(),%s);}
 else{document.getElementById('msg').innerText=error||'Authorization complete. You can close this window.';}
-</script></body></html>`, title, title, code, state, errSafe, msgType)
+</script></body></html>`, title, title, code, state, errSafe, title, msgType, closeDelay)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(html))
