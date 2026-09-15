@@ -1,0 +1,461 @@
+package httpapi
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"strconv"
+	"strings"
+
+	"github.com/go-chi/chi/v5"
+	chimw "github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/cors"
+	"github.com/nisha-ts-40599/blink-backend/internal/agent"
+	"github.com/nisha-ts-40599/blink-backend/internal/auth"
+	"github.com/nisha-ts-40599/blink-backend/internal/config"
+	"github.com/nisha-ts-40599/blink-backend/internal/integrations"
+	"github.com/nisha-ts-40599/blink-backend/internal/mailer"
+	"github.com/nisha-ts-40599/blink-backend/internal/project"
+	"github.com/nisha-ts-40599/blink-backend/internal/roles"
+	"github.com/nisha-ts-40599/blink-backend/internal/s3ws"
+)
+
+type Server struct {
+	cfg    config.Config
+	auth   *auth.Service
+	proj   *project.Service
+	agent  *agent.Client
+	mail   *mailer.Service
+	integ  *integrations.Service
+	s3     *s3ws.Service
+}
+
+func New(cfg config.Config, authSvc *auth.Service, proj *project.Service, agentClient *agent.Client, mail *mailer.Service, integ *integrations.Service, s3 *s3ws.Service) http.Handler {
+	s := &Server{cfg: cfg, auth: authSvc, proj: proj, agent: agentClient, mail: mail, integ: integ, s3: s3}
+	r := chi.NewRouter()
+	r.Use(chimw.RequestID, chimw.RealIP, chimw.Logger, chimw.Recoverer)
+	r.Use(cors.Handler(cors.Options{
+		AllowedOrigins: cfg.CORSOrigins,
+		AllowedMethods: []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		AllowedHeaders: []string{"Accept", "Authorization", "Content-Type"},
+		ExposedHeaders: []string{
+			"Content-Disposition",
+			"X-Blink-Stakeholder-Source",
+			"X-Blink-Workspace-Structure",
+			"X-Blink-File-Count",
+			"X-Blink-Next-Command",
+			"X-Blink-Setup-Status",
+			"X-Blink-Setup-Validated",
+			"X-Blink-Identity-Source",
+			"X-Blink-Overlay-Count",
+			"X-Blink-Context-Ready",
+			"X-Blink-Delivery-Ready",
+			"X-Blink-Folder-Status",
+		},
+		AllowCredentials: true,
+		MaxAge:           300,
+	}))
+
+	r.Get("/", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"service": "blink-backend",
+			"status":  "UP",
+			"hint":    "This is the API. Open the Blink UI at http://localhost:5173 (Vite proxies /api here).",
+			"health":  "/actuator/health",
+		})
+	})
+	r.Get("/actuator/health", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "UP"})
+	})
+
+	r.Route("/api", func(api chi.Router) {
+		api.Route("/auth", func(ar chi.Router) {
+			ar.Get("/config", s.authConfig)
+			ar.Post("/otp/request", s.otpRequest)
+			ar.Post("/otp/verify", s.otpVerify)
+			ar.With(s.requireAuth).Get("/me", s.authMe)
+			ar.With(s.requireAuth).Post("/logout", s.authLogout)
+		})
+
+		// OAuth browser callbacks stay public (provider redirect).
+		api.Get("/integrations/jira/oauth/callback", s.integ.JiraOAuthCallback)
+		api.Get("/integrations/github/oauth/callback", s.integ.GitHubOAuthCallback)
+		api.Get("/integrations/figma/oauth/callback", s.integ.FigmaOAuthCallback)
+
+		api.Group(func(pr chi.Router) {
+			pr.Use(s.requireAuth)
+
+			pr.Get("/db-status", s.dbStatus)
+			pr.Get("/stakeholder-roles", s.stakeholderRoles)
+			pr.Post("/stakeholder-questions/send", s.sendStakeholderQuestions)
+			pr.Post("/grooming/clarify", s.groomClarify)
+
+			pr.Route("/projects", func(prr chi.Router) {
+				prr.Get("/", s.listProjects)
+				prr.Get("/mine", s.mineProjects)
+				prr.Get("/workspace-tree", s.workspaceTree)
+				prr.Get("/workspace-status", s.workspaceStatus)
+				prr.Post("/", s.createProject)
+				prr.Put("/{id}", s.updateProject)
+				prr.Get("/{id}", s.getProject)
+				prr.Get("/{id}/governance-status", s.governanceStatus)
+				prr.Get("/{id}/workspace", s.projectWorkspace)
+				prr.Post("/{id}/configure-stakeholders", s.configureStakeholders)
+				prr.Post("/{id}/plan-product-scope", s.planProductScopeID)
+				prr.Post("/plan-product-scope", s.planProductScope)
+				prr.Post("/{id}/setup", s.setupProject)
+				prr.Post("/{id}/download", s.downloadProject)
+			})
+
+			pr.Route("/integrations", func(ir chi.Router) {
+				ir.Post("/connect", s.integ.Connect)
+				ir.Post("/repositories", s.integ.CreateRepositories)
+				ir.Get("/jira/oauth/url", s.integ.JiraOAuthURL)
+				ir.Post("/jira/oauth/exchange", s.integ.JiraOAuthExchange)
+				ir.Get("/github/oauth/url", s.integ.GitHubOAuthURL)
+				ir.Post("/github/oauth/exchange", s.integ.GitHubOAuthExchange)
+				ir.Get("/figma/oauth/url", s.integ.FigmaOAuthURL)
+				ir.Post("/figma/oauth/exchange", s.integ.FigmaOAuthExchange)
+				ir.Post("/jira/projects", s.integ.JiraProjects)
+				ir.Post("/github/orgs", s.integ.GitHubOrgs)
+				ir.Post("/figma/teams", s.integ.FigmaTeams)
+				ir.Post("/figma/projects", s.integ.FigmaProjects)
+				ir.Post("/jira/issues", s.integ.CreateJiraIssues)
+				ir.Post("/jira/comments", s.integ.CreateJiraComment)
+				ir.Post("/jira/comments/poll", s.integ.PollJiraComments)
+				ir.Post("/binding", s.integ.Binding)
+			})
+
+			pr.Route("/dev/workspaces", func(dr chi.Router) {
+				dr.Get("/", s.s3.List)
+				dr.Delete("/", s.s3.DeleteAll)
+				dr.Delete("/{folder}", s.s3.DeleteOne)
+			})
+			pr.Route("/dev/jira/issues", func(dr chi.Router) {
+				dr.Get("/", s.integ.ListBlinkIssues)
+				dr.Delete("/", s.integ.DeleteAllBlinkIssues)
+				dr.Delete("/{issueKey}", s.integ.DeleteBlinkIssue)
+			})
+		})
+	})
+
+	return r
+}
+
+type ctxKey string
+
+const sessionKey ctxKey = "session"
+
+func (s *Server) requireAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sess, err := s.auth.RequireSession(r.Context(), r.Header.Get("Authorization"))
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		ctx := context.WithValue(r.Context(), sessionKey, sess)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+func sessionEmail(r *http.Request) string {
+	if v, ok := r.Context().Value(sessionKey).(*auth.Session); ok && v != nil {
+		return v.Email
+	}
+	return ""
+}
+
+func (s *Server) authConfig(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.auth.Config())
+}
+
+func (s *Server) otpRequest(w http.ResponseWriter, r *http.Request) {
+	var req auth.OTPRequest
+	if err := readJSON(r, &req); err != nil {
+		writeErr(w, err)
+		return
+	}
+	resp, err := s.auth.RequestOTP(r.Context(), req)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) otpVerify(w http.ResponseWriter, r *http.Request) {
+	var req auth.OTPVerify
+	if err := readJSON(r, &req); err != nil {
+		writeErr(w, err)
+		return
+	}
+	resp, err := s.auth.VerifyOTP(r.Context(), req)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) authMe(w http.ResponseWriter, r *http.Request) {
+	resp, err := s.auth.Me(r.Context(), r.Header.Get("Authorization"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) authLogout(w http.ResponseWriter, r *http.Request) {
+	s.auth.Logout(r.Context(), r.Header.Get("Authorization"))
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) dbStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "engine": "postgres"})
+}
+
+func (s *Server) stakeholderRoles(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, roles.Catalog())
+}
+
+func (s *Server) sendStakeholderQuestions(w http.ResponseWriter, r *http.Request) {
+	var body map[string]any
+	if err := readJSON(r, &body); err != nil {
+		writeErr(w, err)
+		return
+	}
+	to, _ := body["email"].(string)
+	subject, _ := body["subject"].(string)
+	msg, _ := body["body"].(string)
+	if to == "" || subject == "" || msg == "" {
+		writeErr(w, fmt.Errorf("email, subject, and body are required"))
+		return
+	}
+	if err := s.mail.SendStakeholder(r.Context(), to, subject, msg); err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+}
+
+func (s *Server) groomClarify(w http.ResponseWriter, r *http.Request) {
+	var body map[string]any
+	if err := readJSON(r, &body); err != nil {
+		writeErr(w, err)
+		return
+	}
+	raw, err := s.agent.Clarify(r.Context(), body)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(raw)
+}
+
+func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
+	// Tenant isolation: list only the caller's projects (was global in Java).
+	list, err := s.proj.ListMine(r.Context(), sessionEmail(r))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (s *Server) mineProjects(w http.ResponseWriter, r *http.Request) {
+	p, err := s.proj.LatestForOwner(r.Context(), sessionEmail(r))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
+func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
+	var req project.ProjectRequest
+	if err := readJSON(r, &req); err != nil {
+		writeErr(w, err)
+		return
+	}
+	p, err := s.proj.Create(r.Context(), req, sessionEmail(r))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	id := p.ID
+	go s.s3.ProvisionAsync(context.Background(), p.ProjectName, &id)
+	writeJSON(w, http.StatusOK, p)
+}
+
+func (s *Server) updateProject(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	var req project.ProjectRequest
+	if err := readJSON(r, &req); err != nil {
+		writeErr(w, err)
+		return
+	}
+	p, err := s.proj.Update(r.Context(), id, req, sessionEmail(r))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
+func (s *Server) getProject(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	p, err := s.proj.RequireOwned(r.Context(), id, sessionEmail(r))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
+func (s *Server) governanceStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"status": "idle", "sodWarnings": []string{}, "message": "ok"})
+}
+
+func (s *Server) projectWorkspace(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	p, err := s.proj.RequireOwned(r.Context(), id, sessionEmail(r))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.s3.Status(p.ProjectName, &id))
+}
+
+func (s *Server) workspaceStatus(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("projectName")
+	writeJSON(w, http.StatusOK, s.s3.Status(name, nil))
+}
+
+func (s *Server) workspaceTree(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"nodes": []any{}})
+}
+
+func (s *Server) configureStakeholders(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	p, err := s.proj.RequireOwned(r.Context(), id, sessionEmail(r))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	stakes := make([]map[string]string, 0, len(p.Stakeholders))
+	for _, st := range p.Stakeholders {
+		stakes = append(stakes, map[string]string{"role_id": st.RoleCode, "name": st.Name, "email": st.Email})
+	}
+	raw, err := s.agent.ConfigureStakeholders(r.Context(), p.ProjectName, strconv.FormatInt(id, 10), stakes)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(raw)
+}
+
+func (s *Server) planProductScopeID(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	p, err := s.proj.RequireOwned(r.Context(), id, sessionEmail(r))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	var body map[string]any
+	_ = readJSON(r, &body)
+	reqText, _ := body["requirementText"].(string)
+	raw, err := s.agent.PlanProductScope(r.Context(), p.ProjectName, strconv.FormatInt(id, 10), reqText, sessionEmail(r))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(raw)
+}
+
+func (s *Server) planProductScope(w http.ResponseWriter, r *http.Request) {
+	var body map[string]any
+	if err := readJSON(r, &body); err != nil {
+		writeErr(w, err)
+		return
+	}
+	name, _ := body["projectName"].(string)
+	reqText, _ := body["requirementText"].(string)
+	raw, err := s.agent.PlanProductScope(r.Context(), name, "", reqText, sessionEmail(r))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(raw)
+}
+
+// setupProject and downloadProject live in setup_download.go.
+
+func pathID(r *http.Request) (int64, error) {
+	raw := chi.URLParam(r, "id")
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || id <= 0 {
+		return 0, fmt.Errorf("invalid project id")
+	}
+	return id, nil
+}
+
+func readJSON(r *http.Request, dest any) error {
+	defer r.Body.Close()
+	dec := json.NewDecoder(io.LimitReader(r.Body, 8<<20))
+	if err := dec.Decode(dest); err != nil {
+		return fmt.Errorf("invalid JSON: %w", err)
+	}
+	return nil
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+func writeErr(w http.ResponseWriter, err error) {
+	status := http.StatusBadRequest
+	msg := err.Error()
+	switch {
+	case errors.Is(err, auth.ErrUnauthorized):
+		status = http.StatusUnauthorized
+		msg = "Sign in to continue."
+	case errors.Is(err, auth.ErrForbidden):
+		status = http.StatusForbidden
+	case strings.Contains(strings.ToLower(msg), "not found"):
+		status = http.StatusNotFound
+	case strings.Contains(strings.ToLower(msg), "forbidden"):
+		status = http.StatusForbidden
+	}
+	writeJSON(w, status, map[string]string{"message": msg})
+}

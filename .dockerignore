@@ -1,9 +1,10 @@
 .git
-.idea
-.vscode
-.mvn
-target
+.gitignore
+bin/
+target/
+.idea/
+.vscode/
 *.iml
 .env
-*.log
-.DS_Store
+.blink-outbox/
+node_modules/

@@ -42,5 +42,21 @@ services:
         value: us-west-2
       - key: S3_BUCKET_NAME
         value: blink-ai-dev
-      - key: S3_PUBLIC_BASE_URL
-        value: https://blink-ai-dev.s3-us-west-2.amazonaws.com/
+      - key: BLINK_PROD
+        value: "true"
+      - key: BLINK_SMTP_HOST
+        sync: false
+      - key: BLINK_SMTP_USERNAME
+        sync: false
+      - key: BLINK_SMTP_PASSWORD
+        sync: false
+      - key: BLINK_SMTP_FROM
+        sync: false
+      - key: BLINK_LOGIN_GATE
+        sync: false
+      - key: BLINK_JIRA_REDIRECT_URI
+        sync: false
+      - key: BLINK_GITHUB_REDIRECT_URI
+        sync: false
+      - key: BLINK_FIGMA_REDIRECT_URI
+        sync: false
