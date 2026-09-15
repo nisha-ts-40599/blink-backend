@@ -135,6 +135,10 @@ public class StakeholderEmailService {
         props.put("mail.smtp.auth", properties.getSmtpUsername() != null && !properties.getSmtpUsername().isBlank());
         props.put("mail.smtp.starttls.enable", properties.isSmtpStartTls());
         props.put("mail.smtp.starttls.required", properties.isSmtpStartTls());
+        // Office365 (and similar) can hang forever without these; Blink login then sticks on "Sending code…".
+        props.put("mail.smtp.connectiontimeout", "10000");
+        props.put("mail.smtp.timeout", "10000");
+        props.put("mail.smtp.writetimeout", "10000");
 
         SimpleMailMessage message = new SimpleMailMessage();
         String from = properties.getSmtpFrom() == null || properties.getSmtpFrom().isBlank()

@@ -10,3 +10,4 @@ target/
 .blink-nodb.json
 .blink-integrations.json
 .DS_Store
+.neon
