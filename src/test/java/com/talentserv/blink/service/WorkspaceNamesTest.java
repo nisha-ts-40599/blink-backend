@@ -24,6 +24,12 @@ class WorkspaceNamesTest {
                 .isEqualTo("https://blink-ai-dev.s3-us-west-2.amazonaws.com/food_delivery_workspace/");
         assertThat(WorkspaceNames.publicUrl("https://blink-ai-dev.s3-us-west-2.amazonaws.com/", "Food Delivery", 6L))
                 .isEqualTo("https://blink-ai-dev.s3-us-west-2.amazonaws.com/food_delivery_6_workspace/");
+        assertThat(WorkspaceNames.isBlinkWorkspaceFolder("food_delivery_6_workspace")).isTrue();
+        assertThat(WorkspaceNames.isBlinkWorkspaceFolder("food_delivery_workspace")).isTrue();
+        assertThat(WorkspaceNames.isBlinkWorkspaceFolder("../secret")).isFalse();
+        assertThat(WorkspaceNames.isBlinkWorkspaceFolder("other_prefix")).isFalse();
+        assertThat(WorkspaceNames.parseProjectId("food_delivery_6_workspace")).isEqualTo(6L);
+        assertThat(WorkspaceNames.parseProjectId("food_delivery_workspace")).isNull();
     }
 
     @Test

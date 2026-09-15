@@ -35,6 +35,9 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
 import com.talentserv.blink.config.BlinkProperties;
+import com.talentserv.blink.dto.S3WorkspaceDeleteResponse;
+import com.talentserv.blink.dto.S3WorkspaceListResponse;
+import com.talentserv.blink.dto.S3WorkspaceProjectResponse;
 import com.talentserv.blink.dto.WorkspaceInventoryResponse;
 import com.talentserv.blink.dto.WorkspaceStatusResponse;
 import com.talentserv.blink.error.ApiException;
@@ -46,9 +49,15 @@ import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.http.urlconnection.UrlConnectionHttpClient;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.Delete;
+import software.amazon.awssdk.services.s3.model.DeleteObjectsRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
+import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
 import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
+import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
+import software.amazon.awssdk.services.s3.model.ObjectIdentifier;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
+import software.amazon.awssdk.services.s3.model.S3Exception;
 import software.amazon.awssdk.services.s3.model.S3Object;
 
 @Service
@@ -56,6 +65,8 @@ public class S3WorkspaceService {
 
     private static final Logger log = LoggerFactory.getLogger(S3WorkspaceService.class);
     private static final String KIT_COMPLETE = "automation_sdlc/.blink-kit-complete";
+    /** Written when Blink provisions a kit — never present on unrelated prefixes. */
+    private static final String WORKSPACE_MANIFEST = ".blink-workspace.json";
 
     private final BlinkProperties properties;
     private final ZipPackageService zipPackageService;
@@ -165,6 +176,164 @@ public class S3WorkspaceService {
         String folder = WorkspaceNames.folder(projectName, projectId);
         String prefix = folder + "/";
         log.info("S3 inspect listing objects prefix={}", prefix);
+        List<ListedObject> objects = listObjectMeta(prefix);
+        log.info("S3 inspect listed {} objects prefix={}", objects.size(), prefix);
+        return summarize(
+                properties.getS3BucketName().trim(),
+                folder,
+                WorkspaceNames.publicUrl(properties.getS3PublicBaseUrl(), projectName, projectId),
+                status(projectName, projectId),
+                objects
+        );
+    }
+
+    /**
+     * Top-level Blink-owned {@code *_workspace/} prefixes only.
+     * A folder must match the naming pattern <em>and</em> carry a Blink marker
+     * ({@code .blink-workspace.json} or kit-complete). Unrelated prefixes (e.g. Acadware)
+     * are never listed. Marker checks run in parallel — a shared bucket can have 100+
+     * {@code *_workspace} folders, and sequential HEAD calls hang the developer panel.
+     */
+    public S3WorkspaceListResponse listBlinkWorkspaces() {
+        if (!enabled()) {
+            return new S3WorkspaceListResponse(false, null, List.of());
+        }
+        String bucket = properties.getS3BucketName().trim();
+        List<String> candidates = new ArrayList<>();
+        String token = null;
+        do {
+            var response = client().listObjectsV2(ListObjectsV2Request.builder()
+                    .bucket(bucket)
+                    .delimiter("/")
+                    .continuationToken(token)
+                    .build());
+            if (response.commonPrefixes() != null) {
+                for (var common : response.commonPrefixes()) {
+                    String prefix = common.prefix();
+                    if (prefix == null || !prefix.endsWith("/")) {
+                        continue;
+                    }
+                    String folder = prefix.substring(0, prefix.length() - 1);
+                    if (WorkspaceNames.isBlinkWorkspaceFolder(folder)) {
+                        candidates.add(folder);
+                    }
+                }
+            }
+            token = Boolean.TRUE.equals(response.isTruncated()) ? response.nextContinuationToken() : null;
+        } while (token != null);
+
+        String base = properties.getS3PublicBaseUrl();
+        String urlPrefix = (base == null || base.isBlank())
+                ? ""
+                : (base.endsWith("/") ? base : base + "/");
+
+        List<Future<S3WorkspaceProjectResponse>> futures = new ArrayList<>(candidates.size());
+        for (String folder : candidates) {
+            futures.add(uploads.submit(() -> describeIfBlinkOwned(folder, urlPrefix)));
+        }
+
+        List<S3WorkspaceProjectResponse> workspaces = new ArrayList<>();
+        try {
+            for (Future<S3WorkspaceProjectResponse> future : futures) {
+                S3WorkspaceProjectResponse row = future.get(45, TimeUnit.SECONDS);
+                if (row != null) {
+                    workspaces.add(row);
+                }
+            }
+        } catch (TimeoutException ex) {
+            for (Future<S3WorkspaceProjectResponse> future : futures) {
+                future.cancel(true);
+            }
+            throw new ApiException(HttpStatus.GATEWAY_TIMEOUT, "Timed out listing Blink S3 workspaces.");
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "Interrupted while listing Blink S3 workspaces.");
+        } catch (ExecutionException ex) {
+            Throwable cause = ex.getCause() == null ? ex : ex.getCause();
+            if (cause instanceof ApiException api) {
+                throw api;
+            }
+            log.warn("Failed listing Blink S3 workspaces: {}", cause.toString());
+            throw new ApiException(HttpStatus.BAD_GATEWAY, "Could not list Blink S3 workspaces.");
+        }
+
+        workspaces.sort((a, b) -> String.CASE_INSENSITIVE_ORDER.compare(a.folder(), b.folder()));
+        return new S3WorkspaceListResponse(true, bucket, workspaces);
+    }
+
+    private S3WorkspaceProjectResponse describeIfBlinkOwned(String folder, String urlPrefix) {
+        if (!isBlinkOwnedWorkspace(folder)) {
+            return null;
+        }
+        boolean kitComplete = hasObject(folder + "/" + KIT_COMPLETE);
+        String url = urlPrefix.isEmpty() ? folder + "/" : urlPrefix + folder + "/";
+        // Counts omitted on purpose: full prefix scans hang the panel on large kits.
+        return new S3WorkspaceProjectResponse(
+                folder,
+                WorkspaceNames.parseProjectId(folder),
+                url,
+                0,
+                0,
+                kitComplete
+        );
+    }
+
+    public S3WorkspaceDeleteResponse deleteBlinkWorkspace(String folder) {
+        requireEnabled();
+        String normalized = requireBlinkOwnedFolder(folder);
+        long deleted = deletePrefix(normalized + "/");
+        jobs.remove(normalized);
+        log.info("Deleted Blink S3 workspace folder={} objects={}", normalized, deleted);
+        return new S3WorkspaceDeleteResponse(1, deleted, List.of(normalized));
+    }
+
+    public S3WorkspaceDeleteResponse deleteAllBlinkWorkspaces() {
+        requireEnabled();
+        S3WorkspaceListResponse listed = listBlinkWorkspaces();
+        long objects = 0;
+        List<String> folders = new ArrayList<>();
+        for (S3WorkspaceProjectResponse workspace : listed.workspaces()) {
+            // Re-check ownership immediately before delete (list already filtered).
+            if (!isBlinkOwnedWorkspace(workspace.folder())) {
+                continue;
+            }
+            objects += deletePrefix(workspace.folder() + "/");
+            jobs.remove(workspace.folder());
+            folders.add(workspace.folder());
+        }
+        log.info("Deleted {} Blink S3 workspace folders ({} objects)", folders.size(), objects);
+        return new S3WorkspaceDeleteResponse(folders.size(), objects, folders);
+    }
+
+    /** Name pattern + Blink marker required before any delete. */
+    private String requireBlinkOwnedFolder(String folder) {
+        if (folder == null) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Workspace folder is required.");
+        }
+        String normalized = folder.trim();
+        if (normalized.endsWith("/")) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+        }
+        if (!WorkspaceNames.isBlinkWorkspaceFolder(normalized)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Not a Blink workspace folder.");
+        }
+        if (!isBlinkOwnedWorkspace(normalized)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST,
+                    "Folder is not a Blink-owned workspace (missing .blink-workspace.json / kit marker).");
+        }
+        return normalized;
+    }
+
+    /**
+     * True only when Blink wrote a known marker under this prefix.
+     * Name matching alone is not enough — other products may use {@code *_workspace}.
+     */
+    private boolean isBlinkOwnedWorkspace(String folder) {
+        return hasObject(folder + "/" + WORKSPACE_MANIFEST)
+                || hasObject(folder + "/" + KIT_COMPLETE);
+    }
+
+    private List<ListedObject> listObjectMeta(String prefix) {
         List<ListedObject> objects = new ArrayList<>();
         String token = null;
         do {
@@ -181,14 +350,46 @@ public class S3WorkspaceService {
             }
             token = Boolean.TRUE.equals(response.isTruncated()) ? response.nextContinuationToken() : null;
         } while (token != null);
-        log.info("S3 inspect listed {} objects prefix={}", objects.size(), prefix);
-        return summarize(
-                properties.getS3BucketName().trim(),
-                folder,
-                WorkspaceNames.publicUrl(properties.getS3PublicBaseUrl(), projectName, projectId),
-                status(projectName, projectId),
-                objects
-        );
+        return objects;
+    }
+
+    private long deletePrefix(String prefix) {
+        long deleted = 0;
+        String token = null;
+        do {
+            var response = client().listObjectsV2(ListObjectsV2Request.builder()
+                    .bucket(properties.getS3BucketName().trim())
+                    .prefix(prefix)
+                    .continuationToken(token)
+                    .build());
+            List<ObjectIdentifier> batch = new ArrayList<>();
+            for (S3Object object : response.contents()) {
+                if (object.key() == null || object.key().isBlank()) {
+                    continue;
+                }
+                batch.add(ObjectIdentifier.builder().key(object.key()).build());
+                if (batch.size() == 1000) {
+                    deleted += deleteBatch(batch);
+                    batch.clear();
+                }
+            }
+            if (!batch.isEmpty()) {
+                deleted += deleteBatch(batch);
+            }
+            token = Boolean.TRUE.equals(response.isTruncated()) ? response.nextContinuationToken() : null;
+        } while (token != null);
+        return deleted;
+    }
+
+    private int deleteBatch(List<ObjectIdentifier> batch) {
+        if (batch.isEmpty()) {
+            return 0;
+        }
+        client().deleteObjects(DeleteObjectsRequest.builder()
+                .bucket(properties.getS3BucketName().trim())
+                .delete(Delete.builder().objects(batch).quiet(true).build())
+                .build());
+        return batch.size();
     }
 
     record ListedObject(String key, long size) {
@@ -591,13 +792,21 @@ public class S3WorkspaceService {
     }
 
     private boolean hasObject(String key) {
-        ListObjectsV2Request request = ListObjectsV2Request.builder()
-                .bucket(properties.getS3BucketName().trim())
-                .prefix(key)
-                .maxKeys(1)
-                .build();
-        return client().listObjectsV2(request).contents().stream()
-                .anyMatch(object -> key.equals(object.key()));
+        try {
+            client().headObject(HeadObjectRequest.builder()
+                    .bucket(properties.getS3BucketName().trim())
+                    .key(key)
+                    .build());
+            return true;
+        } catch (NoSuchKeyException ex) {
+            return false;
+        } catch (S3Exception ex) {
+            // 404 = missing. 403 = IAM cannot see that key (e.g. another product's prefix) — not Blink-owned.
+            if (ex.statusCode() == 404 || ex.statusCode() == 403) {
+                return false;
+            }
+            throw ex;
+        }
     }
 
     private Map<String, byte[]> listPrefix(String prefix) {

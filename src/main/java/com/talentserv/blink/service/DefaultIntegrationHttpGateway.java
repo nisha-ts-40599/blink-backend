@@ -41,6 +41,11 @@ public class DefaultIntegrationHttpGateway implements IntegrationHttpGateway {
         return send(url, headers, "PUT", jsonBody == null ? "{}" : jsonBody, "application/json");
     }
 
+    @Override
+    public IntegrationHttpResponse delete(String url, Map<String, String> headers) {
+        return send(url, headers, "DELETE", null, null);
+    }
+
     private IntegrationHttpResponse send(
             String url,
             Map<String, String> headers,
@@ -63,6 +68,8 @@ public class DefaultIntegrationHttpGateway implements IntegrationHttpGateway {
             // Set Content-Type after the body publisher so Java HttpClient cannot
             // rewrite it to text/plain (that is what Atlassian rejects as 415).
             builder.setHeader("Content-Type", contentType == null || contentType.isBlank() ? "application/json" : contentType);
+        } else if ("DELETE".equals(method)) {
+            builder.DELETE();
         } else {
             builder.GET();
         }

@@ -18,6 +18,10 @@ public interface IntegrationHttpGateway {
         throw new UnsupportedOperationException("PUT is not supported.");
     }
 
+    default IntegrationHttpResponse delete(String url, Map<String, String> headers) {
+        throw new UnsupportedOperationException("DELETE is not supported.");
+    }
+
     record IntegrationHttpResponse(int status, String body) {
     }
 }

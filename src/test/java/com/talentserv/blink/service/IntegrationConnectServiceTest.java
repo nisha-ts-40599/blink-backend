@@ -10,6 +10,7 @@ import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import com.talentserv.blink.config.BlinkProperties;
 import com.talentserv.blink.dto.CreateRepositoriesRequest;
 import com.talentserv.blink.dto.CreateRepositoriesResponse;
 import com.talentserv.blink.dto.IntegrationConnectRequest;
@@ -693,6 +694,9 @@ class IntegrationConnectServiceTest {
         var commenting = new IntegrationConnectService(new IntegrationHttpGateway() {
             @Override
             public IntegrationHttpResponse get(String url, Map<String, String> headers) {
+                if (url.contains("/rest/api/3/issue/FIT-1/comment/10001")) {
+                    return json(200, "{\"id\":\"10001\",\"body\":{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"[blink-question:q-42]\"}]}]}}");
+                }
                 return json(404, "");
             }
 
@@ -724,6 +728,39 @@ class IntegrationConnectServiceTest {
         assertThat(posts).hasSize(1);
         assertThat(posts.get(0)[1]).contains("blink-question:q-42");
         assertThat(posts.get(0)[1]).contains("Please confirm MFA choice.");
+        assertThat(posts.get(0)[1]).doesNotContain("\"content\":[]");
+    }
+
+    @Test
+    void createJiraCommentFailsWhenCommentCannotBeVerified() {
+        var commenting = new IntegrationConnectService(new IntegrationHttpGateway() {
+            @Override
+            public IntegrationHttpResponse get(String url, Map<String, String> headers) {
+                return json(404, "");
+            }
+
+            @Override
+            public IntegrationHttpResponse post(String url, Map<String, String> headers, String jsonBody) {
+                if (url.contains("/comment")) {
+                    return json(201, "{\"id\":\"10001\"}");
+                }
+                return json(404, "");
+            }
+        });
+
+        assertThatThrownBy(() -> commenting.createJiraComment(new com.talentserv.blink.dto.JiraCommentCreateRequest(
+                null,
+                "https://acme.atlassian.net",
+                "ada@acme.com",
+                "token",
+                null,
+                null,
+                "FIT-1",
+                "Please confirm MFA choice.",
+                "q-42"
+        )))
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("did not persist");
     }
 
     @Test
@@ -797,6 +834,129 @@ class IntegrationConnectServiceTest {
                 ]}
                 """);
         assertThat(IntegrationConnectService.adfToPlainText(node)).isEqualTo("Hello\nWorld");
+    }
+
+    @Test
+    void blinkSourceMarkersParseWholeLinesOnly() {
+        assertThat(IntegrationConnectService.blinkSourceEpicId("Objective\nSource epic: FIT-E001\n")).isEqualTo("FIT-E001");
+        assertThat(IntegrationConnectService.blinkSourceStoryId("As a user\nSource story: FIT-E001-S001")).isEqualTo("FIT-E001-S001");
+        assertThat(IntegrationConnectService.blinkSourceEpicId("Mentions Source epic: elsewhere inline")).isNull();
+        assertThat(IntegrationConnectService.blinkSourceStoryId("No marker here")).isNull();
+    }
+
+    @Test
+    void listBlinkJiraIssuesReturnsOnlyMarkedIssuesInStoredProject() {
+        var store = new MemoryProjectIntegrationStore();
+        store.upsert(new com.talentserv.blink.dto.StoredIntegration(
+                42L, "jira", null, "https://acme.atlassian.net", "ada@acme.com",
+                null, null, null, "FIT", "Fit", null, null, "basic", "token", null, null
+        ));
+        var service = new IntegrationConnectService(new IntegrationHttpGateway() {
+            @Override
+            public IntegrationHttpResponse get(String url, Map<String, String> headers) {
+                return new IntegrationHttpResponse(404, "");
+            }
+
+            @Override
+            public IntegrationHttpResponse post(String url, Map<String, String> headers, String jsonBody) {
+                if (url.endsWith("/rest/api/3/search/jql") && jsonBody.contains("Source epic:")) {
+                    return json(200, """
+                            {"isLast":true,"issues":[
+                              {"key":"FIT-1","fields":{"summary":"Core","issuetype":{"name":"Epic"},"project":{"key":"FIT"},
+                                "description":{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Source epic: E1"}]}]}}},
+                              {"key":"FIT-9","fields":{"summary":"Human epic","issuetype":{"name":"Epic"},"project":{"key":"FIT"},
+                                "description":{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"No blink marker"}]}]}}},
+                              {"key":"FIT-2","fields":{"summary":"Login","issuetype":{"name":"Story"},"project":{"key":"FIT"},
+                                "description":{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Source story: S1"}]}]}}}
+                            ]}
+                            """);
+                }
+                return new IntegrationHttpResponse(404, "");
+            }
+        }, new BlinkProperties(), store);
+
+        var listed = service.listBlinkJiraIssues("42");
+        assertThat(listed.connected()).isTrue();
+        assertThat(listed.jiraProjectKey()).isEqualTo("FIT");
+        assertThat(listed.issues()).extracting(com.talentserv.blink.dto.BlinkJiraIssueResponse::key)
+                .containsExactly("FIT-1", "FIT-2");
+    }
+
+    @Test
+    void deleteAllBlinkJiraIssuesDeletesStoriesThenEpicsAndSkipsForeignChildren() {
+        var store = new MemoryProjectIntegrationStore();
+        store.upsert(new com.talentserv.blink.dto.StoredIntegration(
+                7L, "jira", null, "https://acme.atlassian.net", "ada@acme.com",
+                null, null, null, "FIT", "Fit", null, null, "basic", "token", null, null
+        ));
+        java.util.List<String> deleted = new java.util.ArrayList<>();
+        var service = new IntegrationConnectService(new IntegrationHttpGateway() {
+            @Override
+            public IntegrationHttpResponse get(String url, Map<String, String> headers) {
+                if (url.contains("/rest/api/3/issue/FIT-2?")) {
+                    return json(200, """
+                            {"key":"FIT-2","fields":{"summary":"Login","issuetype":{"name":"Story"},"project":{"key":"FIT"},
+                              "description":{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Source story: S1"}]}]}}}
+                            """);
+                }
+                if (url.contains("/rest/api/3/issue/FIT-1?")) {
+                    return json(200, """
+                            {"key":"FIT-1","fields":{"summary":"Core","issuetype":{"name":"Epic"},"project":{"key":"FIT"},
+                              "description":{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Source epic: E1"}]}]}}}
+                            """);
+                }
+                if (url.contains("/rest/api/3/issue/FIT-3?")) {
+                    return json(200, """
+                            {"key":"FIT-3","fields":{"summary":"Other epic","issuetype":{"name":"Epic"},"project":{"key":"FIT"},
+                              "description":{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Source epic: E2"}]}]}}}
+                            """);
+                }
+                return new IntegrationHttpResponse(404, "");
+            }
+
+            @Override
+            public IntegrationHttpResponse post(String url, Map<String, String> headers, String jsonBody) {
+                if (!url.endsWith("/rest/api/3/search/jql")) {
+                    return new IntegrationHttpResponse(404, "");
+                }
+                if (jsonBody.contains("Source epic:") || jsonBody.contains("Source story:")) {
+                    return json(200, """
+                            {"isLast":true,"issues":[
+                              {"key":"FIT-1","fields":{"summary":"Core","issuetype":{"name":"Epic"},"project":{"key":"FIT"},
+                                "description":{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Source epic: E1"}]}]}}},
+                              {"key":"FIT-2","fields":{"summary":"Login","issuetype":{"name":"Story"},"project":{"key":"FIT"},
+                                "description":{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Source story: S1"}]}]}}},
+                              {"key":"FIT-3","fields":{"summary":"Other epic","issuetype":{"name":"Epic"},"project":{"key":"FIT"},
+                                "description":{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Source epic: E2"}]}]}}}
+                            ]}
+                            """);
+                }
+                if (jsonBody.contains("FIT-3")) {
+                    return json(200, """
+                            {"isLast":true,"issues":[
+                              {"key":"FIT-99","fields":{"summary":"Manual","issuetype":{"name":"Story"},
+                                "description":{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"human work"}]}]}}}
+                            ]}
+                            """);
+                }
+                return json(200, "{\"isLast\":true,\"issues\":[]}");
+            }
+
+            @Override
+            public IntegrationHttpResponse delete(String url, Map<String, String> headers) {
+                deleted.add(url);
+                return json(204, "");
+            }
+        }, new BlinkProperties(), store);
+
+        var result = service.deleteAllBlinkJiraIssues("7");
+        assertThat(result.deletedKeys()).contains("FIT-2", "FIT-1");
+        assertThat(result.deletedKeys()).doesNotContain("FIT-3");
+        assertThat(result.skippedKeys()).anyMatch(item -> item.startsWith("FIT-3"));
+        assertThat(deleted).anyMatch(url -> url.endsWith("/issue/FIT-2"));
+        assertThat(deleted).anyMatch(url -> url.endsWith("/issue/FIT-1"));
+        assertThat(deleted).noneMatch(url -> url.endsWith("/issue/FIT-3"));
+        assertThat(deleted).noneMatch(url -> url.endsWith("/issue/FIT-99"));
     }
 
     private IntegrationHttpGateway serviceGateway() {

@@ -29,6 +29,9 @@ import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
 
 import com.talentserv.blink.config.BlinkProperties;
+import com.talentserv.blink.dto.BlinkJiraIssueDeleteResponse;
+import com.talentserv.blink.dto.BlinkJiraIssueListResponse;
+import com.talentserv.blink.dto.BlinkJiraIssueResponse;
 import com.talentserv.blink.dto.CreateRepositoriesRequest;
 import com.talentserv.blink.dto.CreateRepositoriesResponse;
 import com.talentserv.blink.dto.IntegrationBindingRequest;
@@ -72,6 +75,10 @@ public class IntegrationConnectService {
     private static final String FIGMA_DEFAULT_SCOPES =
             "current_user:read,file_comments:read,file_comments:write,file_content:read,"
                     + "file_dev_resources:read,file_dev_resources:write,file_metadata:read,file_versions:read";
+    private static final Pattern SOURCE_EPIC_LINE = Pattern.compile("(?m)^Source epic:\\s*(\\S+)\\s*$");
+    private static final Pattern SOURCE_STORY_LINE = Pattern.compile("(?m)^Source story:\\s*(\\S+)\\s*$");
+    private static final int JIRA_SEARCH_PAGE = 50;
+    private static final int JIRA_SEARCH_MAX = 500;
 
     private final IntegrationHttpGateway http;
     private final BlinkProperties properties;
@@ -336,7 +343,7 @@ public class IntegrationConnectService {
         String redirectUri = resolveJiraRedirectUri(requestedRedirectUri, publicApiBase);
         String scopes = firstNonBlank(
                 properties.getJiraScopes(),
-                "read:jira-work write:jira-work read:jira-user read:me offline_access"
+                "read:jira-work write:jira-work delete:jira-work read:jira-user read:me offline_access"
         );
         String state = UUID.randomUUID().toString();
         String url = "https://auth.atlassian.com/authorize"
@@ -699,6 +706,347 @@ public class IntegrationConnectService {
         return new JiraCreateIssuesResponse(status, message, created, errors);
     }
 
+    /**
+     * Lists Jira issues Blink created for this Blink project (description markers only).
+     * Never returns unmarked issues from the shared Jira project.
+     */
+    public BlinkJiraIssueListResponse listBlinkJiraIssues(String projectIdRaw) {
+        Long projectId = requireBlinkProjectId(projectIdRaw);
+        StoredIntegration stored = load(projectId, "jira").orElse(null);
+        if (stored == null) {
+            return new BlinkJiraIssueListResponse(
+                    false, projectId, null, null, List.of(),
+                    "Connect Jira for this Blink project first."
+            );
+        }
+        String projectKey = trimToNull(stored.projectKey());
+        if (projectKey == null) {
+            return new BlinkJiraIssueListResponse(
+                    false, projectId, null, null, List.of(),
+                    "Pick a Jira project on the integrations step before resetting issues."
+            );
+        }
+        JiraCallContext ctx = resolveStoredJira(stored);
+        List<BlinkJiraIssueResponse> issues = searchBlinkMarkedIssues(ctx, projectKey);
+        return new BlinkJiraIssueListResponse(
+                true,
+                projectId,
+                projectKey,
+                ctx.browseBase(),
+                issues,
+                issues.isEmpty()
+                        ? "No Blink-marked issues in Jira project " + projectKey + "."
+                        : issues.size() + " Blink-marked issue(s) in " + projectKey + "."
+        );
+    }
+
+    public BlinkJiraIssueDeleteResponse deleteBlinkJiraIssue(String projectIdRaw, String issueKeyRaw) {
+        Long projectId = requireBlinkProjectId(projectIdRaw);
+        String issueKey = required(issueKeyRaw, "Jira issue key is required.");
+        StoredIntegration stored = requireStoredJira(projectId);
+        JiraCallContext ctx = resolveStoredJira(stored);
+        String projectKey = stored.projectKey().trim();
+
+        BlinkJiraIssueResponse marked = fetchBlinkMarkedIssue(ctx, projectKey, issueKey);
+        if (marked == null) {
+            throw new ApiException(HttpStatus.BAD_REQUEST,
+                    "Issue is not a Blink-marked Jira item (missing Source epic:/Source story:).");
+        }
+        if ("epic".equals(marked.sourceKind())) {
+            List<String> foreignChildren = new ArrayList<>();
+            for (JsonNode child : listChildrenOfEpic(ctx, marked.key())) {
+                String childKey = trimToNull(child.path("key").asText(null));
+                if (childKey == null) {
+                    continue;
+                }
+                String plain = adfToPlainText(child.path("fields").path("description"));
+                if (blinkSourceStoryId(plain) != null || blinkSourceEpicId(plain) != null) {
+                    deleteJiraIssue(ctx, childKey);
+                } else {
+                    foreignChildren.add(childKey);
+                }
+            }
+            if (!foreignChildren.isEmpty()) {
+                throw new ApiException(HttpStatus.CONFLICT,
+                        "Epic " + marked.key() + " still has non-Blink children: "
+                                + String.join(", ", foreignChildren.stream().limit(8).toList()));
+            }
+        }
+        deleteJiraIssue(ctx, marked.key());
+        return new BlinkJiraIssueDeleteResponse(1, 0, List.of(marked.key()), List.of(), List.of());
+    }
+
+    public BlinkJiraIssueDeleteResponse deleteAllBlinkJiraIssues(String projectIdRaw) {
+        Long projectId = requireBlinkProjectId(projectIdRaw);
+        StoredIntegration stored = requireStoredJira(projectId);
+        JiraCallContext ctx = resolveStoredJira(stored);
+        String projectKey = stored.projectKey().trim();
+
+        List<BlinkJiraIssueResponse> issues = searchBlinkMarkedIssues(ctx, projectKey);
+        List<BlinkJiraIssueResponse> stories = issues.stream()
+                .filter(item -> "story".equals(item.sourceKind()))
+                .toList();
+        List<BlinkJiraIssueResponse> epics = issues.stream()
+                .filter(item -> "epic".equals(item.sourceKind()))
+                .toList();
+
+        List<String> deleted = new ArrayList<>();
+        List<String> skipped = new ArrayList<>();
+        List<String> errors = new ArrayList<>();
+
+        for (BlinkJiraIssueResponse story : stories) {
+            try {
+                BlinkJiraIssueResponse again = fetchBlinkMarkedIssue(ctx, projectKey, story.key());
+                if (again == null) {
+                    skipped.add(story.key() + " (not Blink-marked)");
+                    continue;
+                }
+                deleteJiraIssue(ctx, story.key());
+                deleted.add(story.key());
+            } catch (ApiException ex) {
+                errors.add(story.key() + ": " + ex.getMessage());
+            }
+        }
+
+        for (BlinkJiraIssueResponse epic : epics) {
+            try {
+                BlinkJiraIssueResponse again = fetchBlinkMarkedIssue(ctx, projectKey, epic.key());
+                if (again == null) {
+                    skipped.add(epic.key() + " (not Blink-marked)");
+                    continue;
+                }
+                List<String> foreignChildren = unmarkedChildrenOf(ctx, epic.key());
+                if (!foreignChildren.isEmpty()) {
+                    skipped.add(epic.key() + " (has non-Blink children)");
+                    continue;
+                }
+                deleteJiraIssue(ctx, epic.key());
+                deleted.add(epic.key());
+            } catch (ApiException ex) {
+                errors.add(epic.key() + ": " + ex.getMessage());
+            }
+        }
+
+        log.info(
+                "Deleted Blink Jira issues projectId={} jiraProject={} deleted={} skipped={} errors={}",
+                projectId, projectKey, deleted.size(), skipped.size(), errors.size()
+        );
+        return new BlinkJiraIssueDeleteResponse(
+                deleted.size(),
+                skipped.size(),
+                List.copyOf(deleted),
+                List.copyOf(skipped),
+                List.copyOf(errors)
+        );
+    }
+
+    /** Package-visible for tests — Blink epic marker line. */
+    static String blinkSourceEpicId(String plainDescription) {
+        if (plainDescription == null || plainDescription.isBlank()) {
+            return null;
+        }
+        Matcher matcher = SOURCE_EPIC_LINE.matcher(plainDescription);
+        return matcher.find() ? matcher.group(1) : null;
+    }
+
+    /** Package-visible for tests — Blink story marker line. */
+    static String blinkSourceStoryId(String plainDescription) {
+        if (plainDescription == null || plainDescription.isBlank()) {
+            return null;
+        }
+        Matcher matcher = SOURCE_STORY_LINE.matcher(plainDescription);
+        return matcher.find() ? matcher.group(1) : null;
+    }
+
+    private Long requireBlinkProjectId(String projectIdRaw) {
+        Long projectId = parseProjectId(projectIdRaw);
+        if (projectId == null || projectId <= 0) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Blink project id is required.");
+        }
+        return projectId;
+    }
+
+    private StoredIntegration requireStoredJira(Long projectId) {
+        StoredIntegration stored = load(projectId, "jira").orElse(null);
+        if (stored == null || trimToNull(stored.projectKey()) == null) {
+            throw new ApiException(HttpStatus.BAD_REQUEST,
+                    "Connect Jira and select a project for this Blink project first.");
+        }
+        return stored;
+    }
+
+    private JiraCallContext resolveStoredJira(StoredIntegration stored) {
+        if ("oauth".equalsIgnoreCase(trimToNull(stored.authType()))) {
+            return resolveJiraCall(
+                    stored.baseUrl(),
+                    null,
+                    null,
+                    stored.cloudId(),
+                    stored.accessToken()
+            );
+        }
+        return resolveJiraCall(
+                stored.baseUrl(),
+                stored.email(),
+                stored.accessToken(),
+                null,
+                null
+        );
+    }
+
+    private List<BlinkJiraIssueResponse> searchBlinkMarkedIssues(JiraCallContext ctx, String projectKey) {
+        String jql = "project = " + projectKey
+                + " AND (description ~ \"Source epic:\" OR description ~ \"Source story:\") ORDER BY key ASC";
+        List<BlinkJiraIssueResponse> out = new ArrayList<>();
+        for (JsonNode issue : searchJiraIssues(
+                ctx,
+                jql,
+                List.of("summary", "description", "issuetype", "project")
+        )) {
+            BlinkJiraIssueResponse marked = toBlinkMarkedIssue(ctx, projectKey, issue);
+            if (marked != null) {
+                out.add(marked);
+            }
+        }
+        return out;
+    }
+
+    private BlinkJiraIssueResponse fetchBlinkMarkedIssue(JiraCallContext ctx, String projectKey, String issueKey) {
+        String url = ctx.apiBase() + "/rest/api/3/issue/" + encode(issueKey)
+                + "?fields=summary,description,issuetype,project";
+        IntegrationHttpGateway.IntegrationHttpResponse res = http.get(url, ctx.headers());
+        if (res.status() == 404) {
+            return null;
+        }
+        if (res.status() >= 400) {
+            throw new ApiException(HttpStatus.BAD_GATEWAY, jiraErrorMessage(res.body(), res.status()));
+        }
+        try {
+            return toBlinkMarkedIssue(ctx, projectKey, MAPPER.readTree(res.body() == null ? "{}" : res.body()));
+        } catch (ApiException ex) {
+            throw ex;
+        } catch (Exception ex) {
+            throw new ApiException(HttpStatus.BAD_GATEWAY, "Could not parse Jira issue " + issueKey + ".");
+        }
+    }
+
+    private BlinkJiraIssueResponse toBlinkMarkedIssue(JiraCallContext ctx, String projectKey, JsonNode issue) {
+        if (issue == null || issue.isMissingNode() || issue.isNull()) {
+            return null;
+        }
+        String key = trimToNull(issue.path("key").asText(null));
+        String issueProject = trimToNull(issue.path("fields").path("project").path("key").asText(null));
+        if (key == null || issueProject == null || !issueProject.equalsIgnoreCase(projectKey)) {
+            return null;
+        }
+        String plain = adfToPlainText(issue.path("fields").path("description"));
+        String epicId = blinkSourceEpicId(plain);
+        String storyId = blinkSourceStoryId(plain);
+        String typeName = trimToNull(issue.path("fields").path("issuetype").path("name").asText(null));
+        String summary = trimToNull(issue.path("fields").path("summary").asText(null));
+        if (summary == null) {
+            summary = key;
+        }
+        String url = ctx.browseBase().replaceAll("/+$", "") + "/browse/" + key;
+        if (epicId != null && typeName != null && typeName.equalsIgnoreCase("Epic")) {
+            return new BlinkJiraIssueResponse(key, typeName, summary, "epic", epicId, url);
+        }
+        if (storyId != null) {
+            String kindType = typeName == null ? "Story" : typeName;
+            return new BlinkJiraIssueResponse(key, kindType, summary, "story", storyId, url);
+        }
+        // Epic marker without Epic type — still treat as Blink epic for safety listing.
+        if (epicId != null) {
+            return new BlinkJiraIssueResponse(key, typeName == null ? "Epic" : typeName, summary, "epic", epicId, url);
+        }
+        return null;
+    }
+
+    private List<String> unmarkedChildrenOf(JiraCallContext ctx, String epicKey) {
+        List<String> foreign = new ArrayList<>();
+        for (JsonNode issue : listChildrenOfEpic(ctx, epicKey)) {
+            String key = trimToNull(issue.path("key").asText(null));
+            if (key == null) {
+                continue;
+            }
+            String plain = adfToPlainText(issue.path("fields").path("description"));
+            if (blinkSourceStoryId(plain) == null && blinkSourceEpicId(plain) == null) {
+                foreign.add(key);
+            }
+        }
+        return foreign;
+    }
+
+    private List<JsonNode> listChildrenOfEpic(JiraCallContext ctx, String epicKey) {
+        String jql = "(parent = " + epicKey + " OR \"Epic Link\" = " + epicKey + ") ORDER BY key ASC";
+        return searchJiraIssues(ctx, jql, List.of("summary", "description", "issuetype"));
+    }
+
+    /**
+     * Atlassian enhanced search ({@code POST /rest/api/3/search/jql}).
+     * The legacy {@code /rest/api/3/search} endpoint has been removed.
+     */
+    private List<JsonNode> searchJiraIssues(JiraCallContext ctx, String jql, List<String> fields) {
+        List<JsonNode> out = new ArrayList<>();
+        String nextPageToken = null;
+        int pages = 0;
+        int maxPages = Math.max(1, JIRA_SEARCH_MAX / JIRA_SEARCH_PAGE);
+        do {
+            ObjectNode body = MAPPER.createObjectNode();
+            body.put("jql", jql);
+            body.put("maxResults", JIRA_SEARCH_PAGE);
+            ArrayNode fieldNodes = body.putArray("fields");
+            for (String field : fields) {
+                fieldNodes.add(field);
+            }
+            if (nextPageToken != null && !nextPageToken.isBlank()) {
+                body.put("nextPageToken", nextPageToken);
+            }
+            String url = ctx.apiBase() + "/rest/api/3/search/jql";
+            IntegrationHttpGateway.IntegrationHttpResponse res = http.post(url, ctx.headers(), body.toString());
+            if (res.status() >= 400) {
+                throw new ApiException(HttpStatus.BAD_GATEWAY, jiraErrorMessage(res.body(), res.status()));
+            }
+            try {
+                JsonNode root = MAPPER.readTree(res.body() == null ? "{}" : res.body());
+                JsonNode issues = root.path("issues");
+                if (issues.isArray()) {
+                    for (JsonNode issue : issues) {
+                        out.add(issue);
+                        if (out.size() >= JIRA_SEARCH_MAX) {
+                            return out;
+                        }
+                    }
+                }
+                nextPageToken = trimToNull(root.path("nextPageToken").asText(null));
+                boolean isLast = root.path("isLast").asBoolean(nextPageToken == null);
+                if (isLast || nextPageToken == null || !issues.isArray() || issues.isEmpty()) {
+                    break;
+                }
+            } catch (ApiException ex) {
+                throw ex;
+            } catch (Exception ex) {
+                throw new ApiException(HttpStatus.BAD_GATEWAY, "Could not parse Jira search results.");
+            }
+            pages++;
+        } while (pages < maxPages);
+        return out;
+    }
+
+    private void deleteJiraIssue(JiraCallContext ctx, String issueKey) {
+        String url = ctx.apiBase() + "/rest/api/3/issue/" + encode(issueKey);
+        IntegrationHttpGateway.IntegrationHttpResponse res = http.delete(url, ctx.headers());
+        if (res.status() == 204 || res.status() == 200) {
+            return;
+        }
+        if (res.status() == 403) {
+            throw new ApiException(HttpStatus.FORBIDDEN,
+                    "Jira refused to delete " + issueKey
+                            + ". Reconnect Jira OAuth so Blink has delete:jira-work, or use an account that can delete issues.");
+        }
+        throw new ApiException(HttpStatus.BAD_GATEWAY, jiraErrorMessage(res.body(), res.status()));
+    }
+
     public JiraCommentCreateResponse createJiraComment(JiraCommentCreateRequest request) {
         if (request == null) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "Jira comment request is required.");
@@ -707,34 +1055,53 @@ public class IntegrationConnectService {
         String bodyText = required(request.body(), "Comment body is required.");
         String questionId = trimToNull(request.blinkQuestionId());
         if (questionId != null && !bodyText.contains("blink-question:" + questionId)) {
-            bodyText = "<!-- blink-question:" + questionId + " -->\n" + bodyText;
+            bodyText = "[blink-question:" + questionId + "]\n" + bodyText;
         }
-        JiraCallContext ctx = resolveJiraFromRequest(
-                request.projectId(),
-                request.baseUrl(),
-                request.email(),
-                request.token(),
-                request.cloudId(),
-                request.accessToken()
-        );
+        // Prefer stored OAuth/token for the Blink project (same path as issue create/list).
+        JiraCallContext ctx;
+        Long projectId = parseProjectId(request.projectId());
+        StoredIntegration stored = projectId == null ? null : load(projectId, "jira").orElse(null);
+        if (stored != null) {
+            ctx = resolveStoredJira(stored);
+        } else {
+            ctx = resolveJiraFromRequest(
+                    request.projectId(),
+                    request.baseUrl(),
+                    request.email(),
+                    request.token(),
+                    request.cloudId(),
+                    request.accessToken()
+            );
+        }
         ObjectNode payload = MAPPER.createObjectNode();
         payload.set("body", adfDocument(bodyText));
-        Map<String, String> headers = new HashMap<>(ctx.headers());
-        headers.put("Content-Type", "application/json");
+        String postUrl = ctx.apiBase() + "/rest/api/3/issue/" + encodePathSegment(issueKey) + "/comment";
         IntegrationHttpGateway.IntegrationHttpResponse res = http.post(
-                ctx.apiBase() + "/rest/api/3/issue/" + encode(issueKey) + "/comment",
-                headers,
+                postUrl,
+                ctx.headers(),
                 writeNode(payload)
         );
         if (res.status() < 200 || res.status() >= 300) {
+            log.warn("Jira comment create failed issueKey={} status={} body={}", issueKey, res.status(), abbreviate(res.body(), 400));
             throw new ApiException(HttpStatus.BAD_GATEWAY, jiraErrorMessage(res.body(), res.status()));
         }
-        String commentId = firstText(res.body(), "id");
+        String commentId = firstJsonId(res.body());
+        if (commentId == null || commentId.isBlank()) {
+            log.warn("Jira comment create returned no id issueKey={} body={}", issueKey, abbreviate(res.body(), 400));
+            throw new ApiException(HttpStatus.BAD_GATEWAY,
+                    "Jira accepted the request but returned no comment id for " + issueKey + ".");
+        }
+        // Confirm the comment is actually readable on the issue before telling Blink it posted.
+        if (!commentExistsOnIssue(ctx, issueKey, commentId, questionId)) {
+            throw new ApiException(HttpStatus.BAD_GATEWAY,
+                    "Jira did not persist the clarification comment on " + issueKey + ". Reconnect Jira and try again.");
+        }
+        log.info("Jira comment created issueKey={} commentId={} questionId={}", issueKey, commentId, questionId);
         return new JiraCommentCreateResponse(
                 "ok",
                 "Comment posted on " + issueKey,
                 issueKey,
-                commentId.isBlank() ? null : commentId,
+                commentId,
                 questionId
         );
     }
@@ -805,6 +1172,92 @@ public class IntegrationConnectService {
         return null;
     }
 
+    /** Prefer issue-key path encoding that keeps PROJ-123 intact (form encoding is wrong for paths). */
+    private static String encodePathSegment(String value) {
+        if (value == null || value.isBlank()) {
+            return "";
+        }
+        String trimmed = value.trim();
+        if (trimmed.matches("[A-Za-z][A-Za-z0-9]*-\\d+")) {
+            return trimmed;
+        }
+        return URLEncoder.encode(trimmed, StandardCharsets.UTF_8).replace("+", "%20");
+    }
+
+    private static String firstJsonId(String body) {
+        if (body == null || body.isBlank()) {
+            return null;
+        }
+        try {
+            JsonNode node = MAPPER.readTree(body);
+            JsonNode id = node.get("id");
+            if (id == null || id.isNull()) {
+                return null;
+            }
+            if (id.isNumber() || id.isTextual()) {
+                String text = id.asText("").trim();
+                return text.isBlank() ? null : text;
+            }
+        } catch (Exception ignored) {
+            // fall through
+        }
+        String scanned = scanJsonStringField(body, "id");
+        return scanned.isBlank() ? null : scanned;
+    }
+
+    private boolean commentExistsOnIssue(
+            JiraCallContext ctx,
+            String issueKey,
+            String commentId,
+            String questionId
+    ) {
+        IntegrationHttpGateway.IntegrationHttpResponse res = http.get(
+                ctx.apiBase() + "/rest/api/3/issue/" + encodePathSegment(issueKey) + "/comment/" + encodePathSegment(commentId),
+                ctx.headers()
+        );
+        if (res.status() >= 200 && res.status() < 300) {
+            if (questionId == null || questionId.isBlank()) {
+                return true;
+            }
+            String plain = adfToPlainText(readTreeSafe(res.body()).path("body"));
+            return plain.contains("blink-question:" + questionId);
+        }
+        // Fallback: list comments and look for id / marker.
+        IntegrationHttpGateway.IntegrationHttpResponse list = http.get(
+                ctx.apiBase() + "/rest/api/3/issue/" + encodePathSegment(issueKey) + "/comment",
+                ctx.headers()
+        );
+        if (list.status() < 200 || list.status() >= 300) {
+            return false;
+        }
+        try {
+            JsonNode comments = MAPPER.readTree(list.body() == null ? "{}" : list.body()).path("comments");
+            if (!comments.isArray()) {
+                return false;
+            }
+            for (JsonNode comment : comments) {
+                if (!commentId.equals(comment.path("id").asText(""))) {
+                    continue;
+                }
+                if (questionId == null || questionId.isBlank()) {
+                    return true;
+                }
+                return adfToPlainText(comment.path("body")).contains("blink-question:" + questionId);
+            }
+        } catch (Exception ex) {
+            return false;
+        }
+        return false;
+    }
+
+    private JsonNode readTreeSafe(String body) {
+        try {
+            return MAPPER.readTree(body == null ? "{}" : body);
+        } catch (Exception ex) {
+            return MAPPER.createObjectNode();
+        }
+    }
+
     private JiraCommentPollResponse.Reply findReplyAfterMarker(
             JiraCallContext ctx,
             String issueKey,
@@ -812,7 +1265,7 @@ public class IntegrationConnectService {
             String blinkAccountId
     ) {
         IntegrationHttpGateway.IntegrationHttpResponse res = getJson(
-                ctx.apiBase() + "/rest/api/3/issue/" + encode(issueKey) + "/comment",
+                ctx.apiBase() + "/rest/api/3/issue/" + encodePathSegment(issueKey) + "/comment",
                 ctx.headers()
         );
         if (res.status() < 200 || res.status() >= 300) {
@@ -1110,15 +1563,15 @@ public class IntegrationConnectService {
         doc.put("type", "doc");
         doc.put("version", 1);
         ArrayNode content = doc.putArray("content");
-        String[] lines = text.split("\\R");
+        String[] lines = text == null ? new String[0] : text.split("\\R");
         for (String line : lines) {
-            ObjectNode paragraph = content.addObject();
-            paragraph.put("type", "paragraph");
-            ArrayNode inner = paragraph.putArray("content");
-            if (line.isBlank()) {
+            if (line == null || line.isBlank()) {
+                // Jira rejects paragraphs with empty content arrays / empty text nodes.
                 continue;
             }
-            ObjectNode run = inner.addObject();
+            ObjectNode paragraph = content.addObject();
+            paragraph.put("type", "paragraph");
+            ObjectNode run = paragraph.putArray("content").addObject();
             run.put("type", "text");
             run.put("text", line);
         }
@@ -1127,7 +1580,7 @@ public class IntegrationConnectService {
             paragraph.put("type", "paragraph");
             ObjectNode run = paragraph.putArray("content").addObject();
             run.put("type", "text");
-            run.put("text", text);
+            run.put("text", text == null || text.isBlank() ? " " : text.trim());
         }
         return doc;
     }
@@ -1612,7 +2065,7 @@ public class IntegrationConnectService {
             JsonNode node = MAPPER.readTree(body);
             for (String field : fields) {
                 JsonNode value = node.get(field);
-                if (value != null && value.isTextual() && !value.asText().isBlank()) {
+                if (value != null && !value.isNull() && (value.isTextual() || value.isNumber()) && !value.asText("").isBlank()) {
                     return value.asText().trim();
                 }
             }
