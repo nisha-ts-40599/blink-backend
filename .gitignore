@@ -1,4 +1,5 @@
 target/
+bin/
 .idea/
 *.iml
 .classpath
@@ -9,5 +10,6 @@ target/
 .env
 .blink-nodb.json
 .blink-integrations.json
+.blink-outbox/
 .DS_Store
 .neon

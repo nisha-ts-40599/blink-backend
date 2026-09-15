@@ -1,17 +1,22 @@
 # syntax=docker/dockerfile:1
 # Build from this folder: docker build -t blink-backend .
-FROM maven:3.9.11-eclipse-temurin-25 AS build
+FROM golang:1.27-bookworm AS build
 WORKDIR /src
-COPY pom.xml .
-COPY src ./src
-RUN mvn -q -DskipTests package
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -o /out/blink-backend ./cmd/server
 
-FROM eclipse-temurin:25-jre
+FROM debian:bookworm-slim
 WORKDIR /app
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git python3 python3-yaml ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates git python3 python3-yaml \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=build /src/target/blink-backend-0.1.0.jar app.jar
+COPY --from=build /out/blink-backend /app/blink-backend
+COPY schema.sql /app/schema.sql
+COPY migrations /app/migrations
+COPY src/main/resources/schema.sql /app/src/main/resources/schema.sql
 ENV BLINK_AUTOMATION_SDLC_PATH=/app/automation_sdlc
+ENV BLINK_PROD=true
 EXPOSE 8090
-ENTRYPOINT ["sh", "-c", "java ${JAVA_OPTS:-} -Dserver.port=${PORT:-8090} -jar /app/app.jar"]
+ENTRYPOINT ["/app/blink-backend"]
