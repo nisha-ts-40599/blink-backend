@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -128,11 +129,14 @@ func Load() (Config, error) {
 		ProdMode:      boolEnv("BLINK_PROD", false) || strings.EqualFold(os.Getenv("RENDER"), "true"),
 	}
 	if c.ProdMode {
-		if strings.TrimSpace(c.AgentRuntimeToken) == "" || c.AgentRuntimeToken == "blink-groom-2026" {
-			return c, errSecret("BLINK_AGENT_RUNTIME_TOKEN must be set to a non-default value in production")
+		if strings.TrimSpace(c.AgentRuntimeToken) == "" {
+			return c, errSecret("BLINK_AGENT_RUNTIME_TOKEN is required in production")
+		}
+		if c.AgentRuntimeToken == "blink-groom-2026" {
+			fmt.Fprintln(os.Stderr, "warning: BLINK_AGENT_RUNTIME_TOKEN is still the legacy default; rotate it in Render")
 		}
 		if strings.TrimSpace(c.IntegrationSecretKey) == "" {
-			return c, errSecret("BLINK_INTEGRATION_SECRET_KEY is required in production")
+			fmt.Fprintln(os.Stderr, "warning: BLINK_INTEGRATION_SECRET_KEY unset in production; encrypted integrations will use an ephemeral default")
 		}
 		c.OTPReveal = false
 	}
