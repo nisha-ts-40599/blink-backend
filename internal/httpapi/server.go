@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 
@@ -60,10 +61,14 @@ func New(cfg config.Config, authSvc *auth.Service, proj *project.Service, agentC
 	}))
 
 	r.Get("/", func(w http.ResponseWriter, _ *http.Request) {
+		uiHint := "http://localhost:5173"
+		if strings.EqualFold(os.Getenv("RENDER"), "true") {
+			uiHint = "https://blink-ui.onrender.com"
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"service": "blink-backend",
 			"status":  "UP",
-			"hint":    "This is the API. Open the Blink UI at http://localhost:5173 (Vite proxies /api here).",
+			"hint":    "This is the Blink API only. Open the UI at " + uiHint,
 			"health":  "/actuator/health",
 		})
 	})
