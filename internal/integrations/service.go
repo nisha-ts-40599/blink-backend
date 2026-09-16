@@ -458,7 +458,7 @@ func (s *Service) FigmaOAuthExchange(w http.ResponseWriter, r *http.Request) {
 func (s *Service) JiraProjects(w http.ResponseWriter, r *http.Request) {
 	var req map[string]any
 	_ = readJSON(r, &req)
-	ctxJ, err := s.resolveJira(r.Context(), parseID(req["projectId"]), req)
+	ctxJ, err := s.resolveJiraOwned(r.Context(), parseID(req["projectId"]), req, ownerFromAuth(r))
 	if err != nil {
 		writeJSON(w, http.StatusOK, []any{})
 		return
@@ -583,10 +583,11 @@ func (s *Service) CreateJiraIssues(w http.ResponseWriter, r *http.Request) {
 	}
 	projectID := parseID(req.ProjectID)
 	stored, _ := s.load(r.Context(), projectID, "jira")
-	ctxJ, err := s.resolveJira(r.Context(), projectID, map[string]any{
+	owner := ownerFromAuth(r)
+	ctxJ, err := s.resolveJiraOwned(r.Context(), projectID, map[string]any{
 		"baseUrl": req.BaseURL, "email": req.Email, "token": req.Token,
 		"cloudId": req.CloudID, "accessToken": req.AccessToken,
-	})
+	}, owner)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -596,13 +597,33 @@ func (s *Service) CreateJiraIssues(w http.ResponseWriter, r *http.Request) {
 		stored.Provider = "jira"
 		stored.ProjectKey = projectKey
 		if stored.AccessToken != "" {
-			_ = s.persistOwned(r.Context(), ownerFromAuth(r), stored)
+			_ = s.persistOwned(r.Context(), owner, stored)
 		}
 	}
 
 	created := make([]map[string]any, 0)
 	errors := make([]string, 0)
 	epicKeys := map[string]string{}
+
+	refreshedOnce := false
+	tryCreate := func(issueType, title, desc, parent, id string) (map[string]any, error) {
+		item, err := s.createJiraIssue(r.Context(), ctxJ, projectKey, issueType, title, desc, parent)
+		if err != nil && !refreshedOnce && strings.Contains(strings.ToLower(err.Error()), "unauthorized") {
+			stored2, ok := s.load(r.Context(), projectID, "jira")
+			if ok {
+				if _, rerr := s.ensureJiraOAuthFresh(r.Context(), owner, &stored2, true); rerr == nil {
+					refreshedOnce = true
+					if rebuilt, berr := s.buildJiraCtx(stored2.CloudID, stored2.AccessToken, stored2.BaseURL, "", ""); berr == nil {
+						ctxJ = rebuilt
+						return s.createJiraIssue(r.Context(), ctxJ, projectKey, issueType, title, desc, parent)
+					}
+				} else {
+					return nil, rerr
+				}
+			}
+		}
+		return item, err
+	}
 
 	for _, epic := range req.Epics {
 		title := strings.TrimSpace(str(epic["title"]))
@@ -617,14 +638,21 @@ func (s *Service) CreateJiraIssues(w http.ResponseWriter, r *http.Request) {
 			}
 			desc += "Source epic: " + id
 		}
-		item, err := s.createJiraIssue(r.Context(), ctxJ, projectKey, "Epic", title, desc, "")
+		item, err := tryCreate("Epic", title, desc, "", id)
 		if err != nil {
 			errors = append(errors, title+": "+err.Error())
-			created = append(created, map[string]any{"id": id, "jiraKey": nil, "url": nil, "type": "Epic", "status": "failed", "message": err.Error()})
+			created = append(created, map[string]any{
+				"id": id, "sourceId": id, "jiraKey": nil, "url": nil, "jiraUrl": nil,
+				"type": "Epic", "status": "failed", "message": err.Error(),
+			})
 			continue
 		}
 		item["id"] = id
+		item["sourceId"] = id
 		item["type"] = "Epic"
+		if u := str(item["url"]); u != "" {
+			item["jiraUrl"] = u
+		}
 		created = append(created, item)
 		if key := str(item["jiraKey"]); key != "" && id != "" {
 			epicKeys[id] = key
@@ -645,14 +673,21 @@ func (s *Service) CreateJiraIssues(w http.ResponseWriter, r *http.Request) {
 		if parent == "" {
 			parent = str(story["epicKey"])
 		}
-		item, err := s.createJiraIssue(r.Context(), ctxJ, projectKey, "Story", title, desc, parent)
+		item, err := tryCreate("Story", title, desc, parent, id)
 		if err != nil {
 			errors = append(errors, title+": "+err.Error())
-			created = append(created, map[string]any{"id": id, "jiraKey": nil, "url": nil, "type": "Story", "status": "failed", "message": err.Error()})
+			created = append(created, map[string]any{
+				"id": id, "sourceId": id, "jiraKey": nil, "url": nil, "jiraUrl": nil,
+				"type": "Story", "status": "failed", "message": err.Error(),
+			})
 			continue
 		}
 		item["id"] = id
+		item["sourceId"] = id
 		item["type"] = "Story"
+		if u := str(item["url"]); u != "" {
+			item["jiraUrl"] = u
+		}
 		created = append(created, item)
 	}
 
@@ -676,20 +711,21 @@ func (s *Service) CreateJiraIssues(w http.ResponseWriter, r *http.Request) {
 	} else {
 		msg += "."
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"status": status, "message": msg, "created": created, "errors": errors})
+	writeJSON(w, http.StatusOK, map[string]any{"status": status, "message": msg, "created": created, "errors": errors, "issues": created})
 }
 
 func (s *Service) CreateJiraComment(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		ProjectID       any    `json:"projectId"`
-		IssueKey        string `json:"issueKey"`
-		Body            string `json:"body"`
-		BlinkQuestionID string `json:"blinkQuestionId"`
-		BaseURL         string `json:"baseUrl"`
-		Email           string `json:"email"`
-		Token           string `json:"token"`
-		CloudID         string `json:"cloudId"`
-		AccessToken     string `json:"accessToken"`
+		ProjectID        any    `json:"projectId"`
+		IssueKey         string `json:"issueKey"`
+		Body             string `json:"body"`
+		BlinkQuestionID  string `json:"blinkQuestionId"`
+		ParentCommentID  string `json:"parentCommentId"`
+		BaseURL          string `json:"baseUrl"`
+		Email            string `json:"email"`
+		Token            string `json:"token"`
+		CloudID          string `json:"cloudId"`
+		AccessToken      string `json:"accessToken"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
@@ -702,18 +738,29 @@ func (s *Service) CreateJiraComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	qid := strings.TrimSpace(req.BlinkQuestionID)
-	if qid != "" && !strings.Contains(bodyText, "blink-question:"+qid) {
+	parentID := strings.TrimSpace(req.ParentCommentID)
+	// Threaded replies must stay plain — do not re-tag with blink-question markers.
+	if qid != "" && parentID == "" && !strings.Contains(bodyText, "blink-question:"+qid) {
 		bodyText = "[blink-question:" + qid + "]\n" + bodyText
 	}
-	ctxJ, err := s.resolveJira(r.Context(), parseID(req.ProjectID), map[string]any{
+	ctxJ, err := s.resolveJiraOwned(r.Context(), parseID(req.ProjectID), map[string]any{
 		"baseUrl": req.BaseURL, "email": req.Email, "token": req.Token,
 		"cloudId": req.CloudID, "accessToken": req.AccessToken,
-	})
+	}, ownerFromAuth(r))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	payload, _ := json.Marshal(map[string]any{"body": adfDocument(bodyText)})
+	payloadBody := map[string]any{"body": adfDocument(bodyText)}
+	if parentID != "" {
+		// Jira Cloud threaded reply: parentId on the comment body (numeric when possible).
+		if n, err := strconv.ParseInt(parentID, 10, 64); err == nil {
+			payloadBody["parentId"] = n
+		} else {
+			payloadBody["parentId"] = parentID
+		}
+	}
+	payload, _ := json.Marshal(payloadBody)
 	status, resp, err := s.do(r.Context(), http.MethodPost,
 		ctxJ.APIBase+"/rest/api/3/issue/"+url.PathEscape(issueKey)+"/comment",
 		withJSON(ctxJ.Headers), payload)
@@ -725,6 +772,7 @@ func (s *Service) CreateJiraComment(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status": "ok", "message": "Comment posted on " + issueKey,
 		"issueKey": issueKey, "commentId": commentID, "blinkQuestionId": qid,
+		"parentCommentId": parentID,
 	})
 }
 
@@ -749,15 +797,16 @@ func (s *Service) PollJiraComments(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "message": "Nothing to poll.", "replies": []any{}})
 		return
 	}
-	ctxJ, err := s.resolveJira(r.Context(), parseID(req.ProjectID), map[string]any{
+	ctxJ, err := s.resolveJiraOwned(r.Context(), parseID(req.ProjectID), map[string]any{
 		"baseUrl": req.BaseURL, "email": req.Email, "token": req.Token,
 		"cloudId": req.CloudID, "accessToken": req.AccessToken,
-	})
+	}, ownerFromAuth(r))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	replies := make([]map[string]any, 0)
+	threads := make([]map[string]any, 0)
+	legacyReplies := make([]map[string]any, 0)
 	for _, item := range req.Items {
 		issueKey := strings.TrimSpace(item.IssueKey)
 		qid := strings.TrimSpace(item.BlinkQuestionID)
@@ -765,7 +814,7 @@ func (s *Service) PollJiraComments(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		_, body, err := s.do(r.Context(), http.MethodGet,
-			ctxJ.APIBase+"/rest/api/3/issue/"+url.PathEscape(issueKey)+"/comment",
+			ctxJ.APIBase+"/rest/api/3/issue/"+url.PathEscape(issueKey)+"/comment?maxResults=100",
 			ctxJ.Headers, nil)
 		if err != nil {
 			continue
@@ -774,31 +823,198 @@ func (s *Service) PollJiraComments(w http.ResponseWriter, r *http.Request) {
 		_ = json.Unmarshal([]byte(body), &root)
 		comments, _ := root["comments"].([]any)
 		marker := "blink-question:" + qid
+		parentCommentID := ""
+		parentBody := ""
+		threadReplies := make([]map[string]any, 0)
+		siblingFallback := make([]map[string]any, 0)
 		foundMarker := false
 		for _, c := range comments {
 			cm, _ := c.(map[string]any)
 			if cm == nil {
 				continue
 			}
-			plain := adfToPlain(cm["body"])
-			if strings.Contains(plain, marker) {
-				foundMarker = true
+			plain := strings.TrimSpace(adfToPlain(cm["body"]))
+			if plain == "" {
 				continue
 			}
-			if foundMarker && strings.TrimSpace(plain) != "" {
-				replies = append(replies, map[string]any{
-					"issueKey": issueKey, "blinkQuestionId": qid,
-					"commentId": str(cm["id"]), "body": plain,
-				})
-				break
+			if strings.Contains(plain, marker) {
+				foundMarker = true
+				parentCommentID = str(cm["id"])
+				parentBody = plain
+				continue
+			}
+			// Skip other Blink outbound clarification comments.
+			if strings.Contains(plain, "blink-question:") || strings.Contains(plain, "[blink-question:") {
+				continue
+			}
+			author := ""
+			if a, ok := cm["author"].(map[string]any); ok {
+				author = firstNonEmpty(str(a["displayName"]), str(a["emailAddress"]), str(a["accountId"]))
+			}
+			row := map[string]any{
+				"commentId": str(cm["id"]),
+				"body":      plain,
+				"author":    author,
+				"created":   str(cm["created"]),
+				"parentId":  commentParentID(cm),
+			}
+			if parentCommentID != "" && commentParentID(cm) == parentCommentID {
+				threadReplies = append(threadReplies, row)
+				continue
+			}
+			if foundMarker {
+				siblingFallback = append(siblingFallback, row)
 			}
 		}
+		// Prefer true threaded children; fall back to flat comments after the marker.
+		replies := threadReplies
+		if len(replies) == 0 {
+			replies = siblingFallback
+		}
+		if len(replies) == 0 {
+			continue
+		}
+		threads = append(threads, map[string]any{
+			"blinkQuestionId": qid,
+			"issueKey":        issueKey,
+			"parentCommentId": parentCommentID,
+			"parentBody":      parentBody,
+			"replies":         replies,
+		})
+		last := replies[len(replies)-1]
+		legacyReplies = append(legacyReplies, map[string]any{
+			"issueKey":        issueKey,
+			"blinkQuestionId": qid,
+			"commentId":       last["commentId"],
+			"body":            last["body"],
+			"author":          last["author"],
+			"created":         last["created"],
+		})
 	}
 	msg := "No replies yet."
-	if len(replies) > 0 {
-		msg = fmt.Sprintf("%d reply(ies) found.", len(replies))
+	replyCount := 0
+	for _, t := range threads {
+		switch arr := t["replies"].(type) {
+		case []map[string]any:
+			replyCount += len(arr)
+		case []any:
+			replyCount += len(arr)
+		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "message": msg, "replies": replies})
+	if replyCount > 0 {
+		msg = fmt.Sprintf("%d reply(ies) across %d thread(s).", replyCount, len(threads))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": "ok", "message": msg,
+		"threads": threads,
+		"replies": legacyReplies, // backward compatible: latest reply per question
+	})
+}
+
+const blinkSimReplyMarker = "[blink-sim-reply]"
+
+// ResetSimulatedJiraReplies deletes Blink-simulated stakeholder reply comments from Jira.
+func (s *Service) ResetSimulatedJiraReplies(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ProjectID   any    `json:"projectId"`
+		BaseURL     string `json:"baseUrl"`
+		Email       string `json:"email"`
+		Token       string `json:"token"`
+		CloudID     string `json:"cloudId"`
+		AccessToken string `json:"accessToken"`
+		Items       []struct {
+			IssueKey         string `json:"issueKey"`
+			BlinkQuestionID  string `json:"blinkQuestionId"`
+			ReplyCommentID   string `json:"replyCommentId"`
+		} `json:"items"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if len(req.Items) == 0 {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "message": "Nothing to reset.", "deleted": 0})
+		return
+	}
+	ctxJ, err := s.resolveJiraOwned(r.Context(), parseID(req.ProjectID), map[string]any{
+		"baseUrl": req.BaseURL, "email": req.Email, "token": req.Token,
+		"cloudId": req.CloudID, "accessToken": req.AccessToken,
+	}, ownerFromAuth(r))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	deleted := 0
+	errors := make([]string, 0)
+	for _, item := range req.Items {
+		issueKey := strings.TrimSpace(item.IssueKey)
+		if issueKey == "" {
+			continue
+		}
+		toDelete := map[string]bool{}
+		if id := strings.TrimSpace(item.ReplyCommentID); id != "" {
+			toDelete[id] = true
+		}
+
+		_, body, err := s.do(r.Context(), http.MethodGet,
+			ctxJ.APIBase+"/rest/api/3/issue/"+url.PathEscape(issueKey)+"/comment?maxResults=100",
+			ctxJ.Headers, nil)
+		if err == nil {
+			var root map[string]any
+			_ = json.Unmarshal([]byte(body), &root)
+			comments, _ := root["comments"].([]any)
+			qid := strings.TrimSpace(item.BlinkQuestionID)
+			marker := ""
+			if qid != "" {
+				marker = "blink-question:" + qid
+			}
+			foundMarker := marker == ""
+			for _, c := range comments {
+				cm, _ := c.(map[string]any)
+				if cm == nil {
+					continue
+				}
+				plain := strings.TrimSpace(adfToPlain(cm["body"]))
+				id := str(cm["id"])
+				if id == "" {
+					continue
+				}
+				if marker != "" && strings.Contains(plain, marker) {
+					foundMarker = true
+					continue
+				}
+				if strings.Contains(plain, blinkSimReplyMarker) || strings.Contains(plain, "Blink simulation") {
+					if foundMarker || marker == "" {
+						toDelete[id] = true
+					}
+				}
+			}
+		}
+
+		for id := range toDelete {
+			status, resp, delErr := s.do(r.Context(), http.MethodDelete,
+				ctxJ.APIBase+"/rest/api/3/issue/"+url.PathEscape(issueKey)+"/comment/"+url.PathEscape(id),
+				ctxJ.Headers, nil)
+			if delErr != nil || (status >= 300 && status != 404) {
+				errors = append(errors, issueKey+":"+id+": "+firstNonEmpty(jsonText(resp, "message"), fmt.Sprintf("HTTP %d", status)))
+				continue
+			}
+			deleted++
+		}
+	}
+
+	status := "ok"
+	if len(errors) > 0 && deleted == 0 {
+		status = "error"
+	} else if len(errors) > 0 {
+		status = "partial"
+	}
+	msg := fmt.Sprintf("Deleted %d simulated reply comment(s).", deleted)
+	if len(errors) > 0 {
+		msg += " " + strings.Join(errors, "; ")
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": status, "message": msg, "deleted": deleted, "errors": errors})
 }
 
 func (s *Service) Binding(w http.ResponseWriter, r *http.Request) {
@@ -1121,6 +1337,10 @@ func mergeStored(existing, in storedIntegration) storedIntegration {
 // --- Jira helpers ---
 
 func (s *Service) resolveJira(ctx context.Context, projectID int64, req map[string]any) (jiraCtx, error) {
+	return s.resolveJiraOwned(ctx, projectID, req, "")
+}
+
+func (s *Service) resolveJiraOwned(ctx context.Context, projectID int64, req map[string]any, ownerEmail string) (jiraCtx, error) {
 	stored, _ := s.load(ctx, projectID, "jira")
 	cloudID := firstNonEmpty(str(req["cloudId"]), stored.CloudID)
 	access := firstNonEmpty(str(req["accessToken"]))
@@ -1133,7 +1353,89 @@ func (s *Service) resolveJira(ctx context.Context, projectID int64, req map[stri
 	}
 	baseURL := firstNonEmpty(str(req["baseUrl"]), stored.BaseURL)
 	email := firstNonEmpty(str(req["email"]), stored.Email)
+
+	if strings.EqualFold(stored.AuthType, "oauth") || (cloudID != "" && access != "") {
+		owner := strings.TrimSpace(ownerEmail)
+		if owner == "" {
+			owner = s.projectOwner(ctx, projectID)
+		}
+		refreshed, err := s.ensureJiraOAuthFresh(ctx, owner, &stored, false)
+		if err != nil && strings.TrimSpace(stored.AccessToken) == "" {
+			return jiraCtx{}, err
+		}
+		if refreshed || strings.TrimSpace(stored.AccessToken) != "" {
+			access = firstNonEmpty(stored.AccessToken, access)
+			cloudID = firstNonEmpty(cloudID, stored.CloudID)
+			baseURL = firstNonEmpty(baseURL, stored.BaseURL)
+		}
+	}
 	return s.buildJiraCtx(cloudID, access, baseURL, email, token)
+}
+
+// ensureJiraOAuthFresh refreshes the Atlassian access token when expired/near expiry, or when force=true.
+func (s *Service) ensureJiraOAuthFresh(ctx context.Context, ownerEmail string, stored *storedIntegration, force bool) (bool, error) {
+	if stored == nil {
+		return false, nil
+	}
+	oauthish := strings.EqualFold(stored.AuthType, "oauth") || (stored.CloudID != "" && stored.AccessToken != "")
+	if !oauthish {
+		return false, nil
+	}
+	if strings.TrimSpace(stored.RefreshToken) == "" {
+		if force || (stored.ExpiresAt != nil && time.Now().UTC().After(*stored.ExpiresAt)) {
+			return false, fmt.Errorf("Jira OAuth session expired. Reconnect Atlassian on Integrations.")
+		}
+		return false, nil
+	}
+	needs := force
+	if !needs {
+		if stored.ExpiresAt == nil {
+			// Unknown expiry — refresh proactively; Atlassian access tokens are short-lived.
+			needs = true
+		} else if time.Until(stored.ExpiresAt.UTC()) < 2*time.Minute {
+			needs = true
+		}
+	}
+	if !needs {
+		return false, nil
+	}
+	clientID := strings.TrimSpace(s.cfg.JiraClientID)
+	clientSecret := strings.TrimSpace(s.cfg.JiraClientSecret)
+	if clientID == "" || clientSecret == "" {
+		return false, fmt.Errorf("Jira OAuth credentials are not configured; cannot refresh the access token.")
+	}
+	tokenBody, _ := json.Marshal(map[string]string{
+		"grant_type":    "refresh_token",
+		"client_id":     clientID,
+		"client_secret": clientSecret,
+		"refresh_token": stored.RefreshToken,
+	})
+	status, body, err := s.do(ctx, http.MethodPost, "https://auth.atlassian.com/oauth/token",
+		map[string]string{"Accept": "application/json", "Content-Type": "application/json"}, tokenBody)
+	if err != nil {
+		return false, fmt.Errorf("Jira token refresh failed: %w", err)
+	}
+	if status < 200 || status >= 300 {
+		return false, fmt.Errorf("Jira OAuth session expired. Reconnect Atlassian on Integrations. (%s)",
+			firstNonEmpty(jsonText(body, "error_description"), jsonText(body, "error"), fmt.Sprintf("HTTP %d", status)))
+	}
+	access := jsonText(body, "access_token")
+	if access == "" {
+		return false, fmt.Errorf("Jira token refresh did not return an access token. Reconnect Atlassian.")
+	}
+	stored.AccessToken = access
+	if rt := jsonText(body, "refresh_token"); rt != "" {
+		stored.RefreshToken = rt
+	}
+	if n := jsonInt(body, "expires_in"); n > 0 {
+		t := time.Now().UTC().Add(time.Duration(n) * time.Second)
+		stored.ExpiresAt = &t
+	}
+	if !strings.EqualFold(stored.AuthType, "oauth") {
+		stored.AuthType = "oauth"
+	}
+	_ = s.persistOwned(ctx, ownerEmail, *stored)
+	return true, nil
 }
 
 func (s *Service) jiraFromStored(stored storedIntegration) (jiraCtx, error) {
@@ -1216,11 +1518,17 @@ func (s *Service) createJiraIssue(ctx context.Context, jctx jiraCtx, projectKey,
 		return nil, err
 	}
 	if status < 200 || status >= 300 {
-		return nil, fmt.Errorf("%s", firstNonEmpty(jsonText(body, "message"), fmt.Sprintf("Jira returned HTTP %d.", status)))
+		return nil, fmt.Errorf("%s", jiraAPIError(body, status))
 	}
 	key := jsonText(body, "key")
 	browse := strings.TrimRight(jctx.BrowseBase, "/") + "/browse/" + key
-	return map[string]any{"jiraKey": key, "url": browse, "status": "created", "message": "Created " + key}, nil
+	return map[string]any{
+		"jiraKey": key,
+		"url":     browse,
+		"jiraUrl": browse,
+		"status":  "created",
+		"message": "Created " + key,
+	}, nil
 }
 
 func (s *Service) searchBlinkMarked(ctx context.Context, jctx jiraCtx, projectKey string) []map[string]any {
@@ -1411,20 +1719,48 @@ func adfToPlain(v any) string {
 	}
 }
 
-func walkADF(node map[string]any, b *strings.Builder) {
-	if text := str(node["text"]); text != "" {
-		b.WriteString(text)
+func commentParentID(cm map[string]any) string {
+	if id := str(cm["parentId"]); id != "" {
+		return id
 	}
-	if typ := str(node["type"]); typ == "paragraph" || typ == "hardBreak" {
-		if b.Len() > 0 && !strings.HasSuffix(b.String(), "\n") {
-			b.WriteByte('\n')
+	switch p := cm["parent"].(type) {
+	case string:
+		return strings.TrimSpace(p)
+	case float64:
+		return strconv.FormatInt(int64(p), 10)
+	case map[string]any:
+		return firstNonEmpty(str(p["id"]), str(p["commentId"]))
+	default:
+		return ""
+	}
+}
+
+func walkADF(node map[string]any, b *strings.Builder) {
+	typ := str(node["type"])
+	if typ == "hardBreak" {
+		b.WriteByte('\n')
+		return
+	}
+	if text := str(node["text"]); text != "" {
+		if b.Len() > 0 {
+			prev := b.String()
+			if !strings.HasSuffix(prev, "\n") && !strings.HasSuffix(prev, " ") {
+				b.WriteByte(' ')
+			}
 		}
+		b.WriteString(text)
 	}
 	if arr, ok := node["content"].([]any); ok {
 		for _, c := range arr {
 			if m, ok := c.(map[string]any); ok {
 				walkADF(m, b)
 			}
+		}
+	}
+	switch typ {
+	case "paragraph", "heading", "bulletList", "orderedList", "listItem", "blockquote", "codeBlock", "rule":
+		if b.Len() > 0 && !strings.HasSuffix(b.String(), "\n") {
+			b.WriteByte('\n')
 		}
 	}
 }
@@ -1624,6 +1960,23 @@ func nullStr(s string) any {
 		return nil
 	}
 	return s
+}
+
+func jiraAPIError(body string, status int) string {
+	detail := firstNonEmpty(jsonText(body, "message"), fmt.Sprintf("Jira returned HTTP %d.", status))
+	var m map[string]any
+	if err := json.Unmarshal([]byte(body), &m); err != nil {
+		return detail
+	}
+	if msgs, ok := m["errorMessages"].([]any); ok && len(msgs) > 0 {
+		return fmt.Sprint(msgs[0])
+	}
+	if errs, ok := m["errors"].(map[string]any); ok && len(errs) > 0 {
+		for k, v := range errs {
+			return fmt.Sprintf("%s: %v", k, v)
+		}
+	}
+	return detail
 }
 
 func jsonText(body string, keys ...string) string {

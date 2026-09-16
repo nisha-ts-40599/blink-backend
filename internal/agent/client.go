@@ -112,6 +112,14 @@ func (c *Client) TechnicalPlan(ctx context.Context, payload map[string]any) (jso
 	return c.Invoke(ctx, payload)
 }
 
+func (c *Client) SummarizeDiscussion(ctx context.Context, payload map[string]any) (json.RawMessage, error) {
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	payload["command"] = "summarize-discussion"
+	return c.Invoke(ctx, payload)
+}
+
 func (c *Client) ConfigureStakeholders(ctx context.Context, projectName, projectID string, stakeholders []map[string]string) (json.RawMessage, error) {
 	payload := map[string]any{
 		"command":      "configure-stakeholders",
