@@ -145,12 +145,20 @@ func (s *Service) CreateRepositories(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	stored, _ := s.load(r.Context(), parseID(req.ProjectID), "github")
+	org := firstNonEmpty(req.Organization, stored.Organization)
 	token := firstNonEmpty(req.Token, stored.AccessToken)
+	if token == "" || org == "" {
+		if owner := ownerFromAuth(r); owner != "" {
+			if u, ok := s.loadUser(r.Context(), owner, "github"); ok {
+				token = firstNonEmpty(token, u.AccessToken)
+				org = firstNonEmpty(org, u.Organization)
+			}
+		}
+	}
 	if token == "" {
 		writeErr(w, http.StatusBadRequest, "Connect GitHub on Integrations first (sign in with GitHub).")
 		return
 	}
-	org := firstNonEmpty(req.Organization, stored.Organization)
 	endpoint := "https://api.github.com/user/repos"
 	if org != "" {
 		endpoint = "https://api.github.com/orgs/" + url.PathEscape(org) + "/repos"
@@ -169,19 +177,33 @@ func (s *Service) CreateRepositories(w http.ResponseWriter, r *http.Request) {
 		body, _ := json.Marshal(map[string]any{"name": name, "description": spec.Description, "private": true})
 		status, resp, err := s.do(r.Context(), http.MethodPost, endpoint, headers, body)
 		if err != nil {
-			results = append(results, map[string]any{"name": name, "status": "failed", "message": err.Error()})
+			results = append(results, map[string]any{
+				"name": name, "status": "failed", "htmlUrl": "", "message": err.Error(),
+			})
 			continue
 		}
 		switch {
 		case status == 422 && strings.Contains(strings.ToLower(resp), "already_exists"):
-			results = append(results, map[string]any{"name": name, "status": "exists", "url": jsonText(resp, "html_url"), "message": "Repository already exists."})
+			htmlURL := jsonText(resp, "html_url")
+			if htmlURL == "" && org != "" {
+				htmlURL = "https://github.com/" + org + "/" + name
+			}
+			results = append(results, map[string]any{
+				"name": name, "status": "exists", "htmlUrl": htmlURL, "message": "Repository already exists.",
+			})
 		case status >= 200 && status < 300:
-			results = append(results, map[string]any{"name": name, "status": "created", "url": jsonText(resp, "html_url"), "message": "Created"})
+			htmlURL := jsonText(resp, "html_url")
+			results = append(results, map[string]any{
+				"name": name, "status": "created", "htmlUrl": htmlURL, "message": "Created " + firstNonEmpty(htmlURL, name),
+			})
 		default:
-			results = append(results, map[string]any{"name": name, "status": "failed", "message": fmt.Sprintf("GitHub HTTP %d", status)})
+			results = append(results, map[string]any{
+				"name": name, "status": "failed", "htmlUrl": "", "message": fmt.Sprintf("GitHub HTTP %d", status),
+			})
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"provider": "github", "results": results})
+	// Match Java CreateRepositoriesResponse + blink_ui contract.
+	writeJSON(w, http.StatusOK, map[string]any{"provider": "github", "repositories": results})
 }
 
 func (s *Service) JiraOAuthURL(w http.ResponseWriter, r *http.Request) {
