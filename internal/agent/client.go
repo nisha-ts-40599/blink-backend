@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -14,8 +15,9 @@ import (
 )
 
 type Client struct {
-	cfg    config.Config
-	client *http.Client
+	cfg          config.Config
+	client       *http.Client
+	streamClient *http.Client
 }
 
 func New(cfg config.Config) *Client {
@@ -23,6 +25,14 @@ func New(cfg config.Config) *Client {
 		cfg: cfg,
 		client: &http.Client{
 			Timeout: 90 * time.Second,
+		},
+		// Streaming turns must not use a hard client timeout; rely on context cancel.
+		streamClient: &http.Client{
+			Timeout: 0,
+			Transport: &http.Transport{
+				ResponseHeaderTimeout: 45 * time.Second,
+				IdleConnTimeout:       90 * time.Second,
+			},
 		},
 	}
 }
@@ -143,6 +153,170 @@ func (c *Client) SetupNewWorkspace(ctx context.Context, payload map[string]any) 
 		payload["mode"] = "apply"
 	}
 	return c.Invoke(ctx, payload)
+}
+
+func (c *Client) ChatTurn(ctx context.Context, payload map[string]any) (json.RawMessage, error) {
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	payload["command"] = "chat-turn"
+	return c.Invoke(ctx, payload)
+}
+
+// ChatTurnResult is the terminal payload from a streamed chat-turn.
+type ChatTurnResult struct {
+	Reply        string
+	NeedsConnect string
+	ToolEvents   any
+	Model        string
+	Status       string
+	Message      string
+	Raw          json.RawMessage
+}
+
+// ChatTurnStream POSTs to the agent /chat/stream SSE endpoint and invokes onToken for each delta.
+func (c *Client) ChatTurnStream(ctx context.Context, payload map[string]any, onToken func(string) error) (*ChatTurnResult, error) {
+	if strings.TrimSpace(c.cfg.AgentRuntimeToken) == "" {
+		return nil, fmt.Errorf("BLINK_AGENT_RUNTIME_TOKEN is not configured")
+	}
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	payload["command"] = "chat-turn"
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+
+	url := strings.TrimRight(c.cfg.AgentRuntimeURL, "/") + "/chat/stream"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "Blink-Backend-Go/1.0")
+	req.Header.Set("Authorization", "Bearer "+c.cfg.AgentRuntimeToken)
+	req.Header.Set("Cache-Control", "no-cache")
+
+	res, err := c.streamClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode >= 400 {
+		raw, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
+		return nil, fmt.Errorf("agent runtime HTTP %d: %s", res.StatusCode, truncate(string(raw), 400))
+	}
+
+	result := &ChatTurnResult{Status: "ok"}
+	var gotDone bool
+	err = readSSE(res.Body, func(event string, data []byte) error {
+		switch event {
+		case "token":
+			var payload struct {
+				Text string `json:"text"`
+			}
+			if err := json.Unmarshal(data, &payload); err != nil {
+				return nil
+			}
+			if payload.Text == "" || onToken == nil {
+				return nil
+			}
+			return onToken(payload.Text)
+		case "error":
+			var payload struct {
+				Message string `json:"message"`
+			}
+			_ = json.Unmarshal(data, &payload)
+			if payload.Message != "" {
+				result.Message = payload.Message
+				result.Status = "error"
+			}
+			return nil
+		case "done":
+			gotDone = true
+			result.Raw = append(json.RawMessage(nil), data...)
+			var root map[string]any
+			if err := json.Unmarshal(data, &root); err != nil {
+				return nil
+			}
+			if v, ok := root["reply"].(string); ok {
+				result.Reply = strings.TrimSpace(v)
+			}
+			if v, ok := root["needsConnect"].(string); ok {
+				result.NeedsConnect = strings.TrimSpace(v)
+			}
+			if v, ok := root["model"].(string); ok {
+				result.Model = v
+			}
+			if v, ok := root["status"].(string); ok {
+				result.Status = v
+			}
+			if v, ok := root["message"].(string); ok {
+				result.Message = v
+			}
+			if tools, ok := root["toolEvents"]; ok {
+				result.ToolEvents = tools
+			}
+			return nil
+		default:
+			return nil
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !gotDone && result.Reply == "" && result.Message == "" {
+		return nil, fmt.Errorf("agent stream ended without a done event")
+	}
+	return result, nil
+}
+
+func readSSE(r io.Reader, handle func(event string, data []byte) error) error {
+	scanner := bufio.NewScanner(r)
+	// LLM tokens / JSON frames can be large.
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024)
+
+	event := "message"
+	var dataLines []string
+	flush := func() error {
+		if len(dataLines) == 0 {
+			event = "message"
+			return nil
+		}
+		data := []byte(strings.Join(dataLines, "\n"))
+		dataLines = dataLines[:0]
+		ev := event
+		event = "message"
+		return handle(ev, data)
+	}
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			if err := flush(); err != nil {
+				return err
+			}
+			continue
+		}
+		if strings.HasPrefix(line, ":") {
+			continue // comment / keepalive
+		}
+		if strings.HasPrefix(line, "event:") {
+			event = strings.TrimSpace(line[len("event:"):])
+			continue
+		}
+		if strings.HasPrefix(line, "data:") {
+			dataLines = append(dataLines, strings.TrimSpace(line[len("data:"):]))
+			continue
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	return flush()
 }
 
 func truncate(s string, n int) string {

@@ -386,3 +386,41 @@ func ownerFromAuth(r *http.Request) string {
 	}
 	return ""
 }
+
+// IsConnected reports whether the project/user has a usable token for provider.
+func (s *Service) IsConnected(ctx context.Context, projectID int64, ownerEmail, provider string) bool {
+	stored, ok := s.load(ctx, projectID, provider)
+	if ok && strings.TrimSpace(stored.AccessToken) != "" {
+		return true
+	}
+	if ownerEmail != "" {
+		if u, uok := s.loadUser(ctx, ownerEmail, provider); uok && strings.TrimSpace(u.AccessToken) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// ConnectionSnapshot returns non-secret binding fields for chat context.
+func (s *Service) ConnectionSnapshot(ctx context.Context, projectID int64, ownerEmail, provider string) map[string]any {
+	stored, ok := s.load(ctx, projectID, provider)
+	if (!ok || strings.TrimSpace(stored.AccessToken) == "") && ownerEmail != "" {
+		if u, uok := s.loadUser(ctx, ownerEmail, provider); uok {
+			stored = mergeStored(stored, u)
+			ok = true
+		}
+	}
+	if !ok {
+		return nil
+	}
+	return map[string]any{
+		"provider":     provider,
+		"account":      stored.Account,
+		"organization": stored.Organization,
+		"projectKey":   stored.ProjectKey,
+		"projectName":  stored.ProjectName,
+		"baseUrl":      stored.BaseURL,
+		"cloudId":      stored.CloudID,
+	}
+}
+
