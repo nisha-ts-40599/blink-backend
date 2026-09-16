@@ -104,8 +104,7 @@ func Load() (Config, error) {
 		FigmaClientID:     os.Getenv("BLINK_FIGMA_CLIENT_ID"),
 		FigmaClientSecret: os.Getenv("BLINK_FIGMA_CLIENT_SECRET"),
 		FigmaRedirectURI:  os.Getenv("BLINK_FIGMA_REDIRECT_URI"),
-		FigmaScopes: env("BLINK_FIGMA_SCOPES",
-			"current_user:read,file_comments:read,file_comments:write,file_content:read,file_dev_resources:read,file_dev_resources:write,file_metadata:read,file_versions:read"),
+		FigmaScopes: env("BLINK_FIGMA_SCOPES", "current_user:read,file_content:read,file_metadata:read"),
 
 		IntegrationSecretKey: os.Getenv("BLINK_INTEGRATION_SECRET_KEY"),
 
