@@ -80,6 +80,38 @@ func (c *Client) PlanProductScope(ctx context.Context, projectName, projectID, r
 	return c.Invoke(ctx, payload)
 }
 
+func (c *Client) ConfirmProductScope(ctx context.Context, payload map[string]any) (json.RawMessage, error) {
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	payload["command"] = "confirm-product-scope"
+	return c.Invoke(ctx, payload)
+}
+
+func (c *Client) ClassifyWork(ctx context.Context, payload map[string]any) (json.RawMessage, error) {
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	payload["command"] = "classify-work"
+	return c.Invoke(ctx, payload)
+}
+
+func (c *Client) CreateSpec(ctx context.Context, payload map[string]any) (json.RawMessage, error) {
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	payload["command"] = "create-spec"
+	return c.Invoke(ctx, payload)
+}
+
+func (c *Client) TechnicalPlan(ctx context.Context, payload map[string]any) (json.RawMessage, error) {
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	payload["command"] = "technical-plan"
+	return c.Invoke(ctx, payload)
+}
+
 func (c *Client) ConfigureStakeholders(ctx context.Context, projectName, projectID string, stakeholders []map[string]string) (json.RawMessage, error) {
 	payload := map[string]any{
 		"command":      "configure-stakeholders",

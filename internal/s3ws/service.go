@@ -348,6 +348,61 @@ func (s *Service) deleteBatch(ctx context.Context, objs []types.ObjectIdentifier
 	return err
 }
 
+// OverlayFile is a relative workspace path + text content from the agent runtime.
+type OverlayFile struct {
+	Path    string
+	Content string
+}
+
+// PutOverlayFiles writes agent overlay files under the project workspace prefix.
+// Safe no-op when S3 is not configured. Skips empty/unsafe paths.
+func (s *Service) PutOverlayFiles(ctx context.Context, projectName string, id *int64, files []OverlayFile) (int, error) {
+	if !s.enabled() || strings.TrimSpace(projectName) == "" || len(files) == 0 {
+		return 0, nil
+	}
+	folder := project.Folder(projectName, id)
+	written := 0
+	for _, f := range files {
+		rel := strings.TrimSpace(strings.ReplaceAll(f.Path, "\\", "/"))
+		rel = strings.TrimPrefix(rel, "/")
+		if rel == "" || strings.Contains(rel, "..") {
+			continue
+		}
+		key := folder + "/" + rel
+		ct := "text/plain; charset=utf-8"
+		lower := strings.ToLower(rel)
+		switch {
+		case strings.HasSuffix(lower, ".json"):
+			ct = "application/json"
+		case strings.HasSuffix(lower, ".yaml"), strings.HasSuffix(lower, ".yml"):
+			ct = "application/yaml"
+		case strings.HasSuffix(lower, ".md"):
+			ct = "text/markdown; charset=utf-8"
+		}
+		body := []byte(f.Content)
+		_, err := s.s3().PutObject(ctx, &s3.PutObjectInput{
+			Bucket:      aws.String(s.bucket()),
+			Key:         aws.String(key),
+			Body:        bytes.NewReader(body),
+			ContentType: aws.String(ct),
+		})
+		if err != nil {
+			return written, fmt.Errorf("put %s: %w", key, err)
+		}
+		written++
+	}
+	return written, nil
+}
+
+// EnsureProvisioned kicks workspace provisioning if status is empty.
+func (s *Service) EnsureProvisioned(ctx context.Context, projectName string, id *int64) {
+	st := s.Status(projectName, id)
+	status, _ := st["workspaceStatus"].(string)
+	if status == "" || status == "failed" {
+		s.ProvisionAsync(ctx, projectName, id)
+	}
+}
+
 func parseProjectID(folder string) any {
 	if !project.IsBlinkWorkspaceFolder(folder) {
 		return nil

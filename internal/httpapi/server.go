@@ -112,6 +112,10 @@ func New(cfg config.Config, authSvc *auth.Service, proj *project.Service, agentC
 				prr.Post("/{id}/configure-stakeholders", s.configureStakeholders)
 				prr.Post("/{id}/plan-product-scope", s.planProductScopeID)
 				prr.Post("/plan-product-scope", s.planProductScope)
+				prr.Post("/{id}/confirm-product-scope", s.confirmProductScope)
+				prr.Post("/{id}/classify-work", s.classifyWork)
+				prr.Post("/{id}/create-spec", s.createSpec)
+				prr.Post("/{id}/technical-plan", s.technicalPlan)
 				prr.Post("/{id}/setup", s.setupProject)
 				prr.Post("/{id}/download", s.downloadProject)
 				prr.Get("/{id}", s.getProject)
@@ -409,6 +413,7 @@ func (s *Server) planProductScopeID(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	s.persistAgentOverlays(r, p.ProjectName, id, raw)
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(raw)
 }
