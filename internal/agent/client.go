@@ -122,6 +122,46 @@ func (c *Client) TechnicalPlan(ctx context.Context, payload map[string]any) (jso
 	return c.Invoke(ctx, payload)
 }
 
+func (c *Client) GroomingStakeholderPack(ctx context.Context, payload map[string]any) (json.RawMessage, error) {
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	payload["command"] = "grooming-stakeholder-pack"
+	return c.Invoke(ctx, payload)
+}
+
+func (c *Client) GroomingRevision(ctx context.Context, payload map[string]any) (json.RawMessage, error) {
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	payload["command"] = "grooming-revision"
+	return c.Invoke(ctx, payload)
+}
+
+func (c *Client) GroomingSignOffCapture(ctx context.Context, payload map[string]any) (json.RawMessage, error) {
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	payload["command"] = "grooming-sign-off-capture"
+	return c.Invoke(ctx, payload)
+}
+
+func (c *Client) ImplementStep(ctx context.Context, payload map[string]any) (json.RawMessage, error) {
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	payload["command"] = "implement-step"
+	return c.Invoke(ctx, payload)
+}
+
+func (c *Client) QaValidation(ctx context.Context, payload map[string]any) (json.RawMessage, error) {
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	payload["command"] = "qa-validation"
+	return c.Invoke(ctx, payload)
+}
+
 func (c *Client) SummarizeDiscussion(ctx context.Context, payload map[string]any) (json.RawMessage, error) {
 	if payload == nil {
 		payload = map[string]any{}
