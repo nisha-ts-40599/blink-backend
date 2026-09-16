@@ -124,6 +124,8 @@ func New(cfg config.Config, authSvc *auth.Service, proj *project.Service, agentC
 				prr.Post("/{id}/git-apply", s.gitApply)
 				prr.Post("/{id}/implement-step", s.implementStepApply)
 				prr.Post("/{id}/qa-validation", s.qaValidation)
+				prr.Post("/{id}/sdlc-start", s.sdlcStart)
+				prr.Post("/{id}/sdlc-next", s.sdlcNext)
 				prr.Post("/{id}/jira-gate-evidence", s.jiraGateEvidence)
 				prr.Post("/{id}/setup", s.setupProject)
 				prr.Post("/{id}/download", s.downloadProject)
