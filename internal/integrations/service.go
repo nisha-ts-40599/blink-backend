@@ -16,7 +16,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nisha-ts-40599/blink-backend/internal/config"
 	"github.com/nisha-ts-40599/blink-backend/internal/crypto"
@@ -109,7 +108,7 @@ func (s *Service) Connect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.persist(r.Context(), storedIntegration{
+	if err := s.persistOwned(r.Context(), ownerFromAuth(r), storedIntegration{
 		ProjectID: projectID, Provider: provider, Account: account, BaseURL: baseURL,
 		Email: str(req["email"]), Username: str(req["username"]), Organization: str(req["organization"]),
 		Workspace: str(req["workspace"]), ProjectKey: str(req["projectKey"]), ProjectName: str(req["projectName"]),
@@ -283,7 +282,7 @@ func (s *Service) JiraOAuthExchange(w http.ResponseWriter, r *http.Request) {
 		projectKey = str(projects[0]["key"])
 		projectName = str(projects[0]["name"])
 	}
-	_ = s.persist(r.Context(), storedIntegration{
+	_ = s.persistOwned(r.Context(), ownerFromAuth(r), storedIntegration{
 		ProjectID: parseID(req.ProjectID), Provider: "jira", Account: account, BaseURL: siteURL,
 		ProjectKey: projectKey, ProjectName: projectName, CloudID: cloudID, AuthType: "oauth",
 		AccessToken: access, RefreshToken: refresh, ExpiresAt: expiresAt,
@@ -361,7 +360,7 @@ func (s *Service) GitHubOAuthExchange(w http.ResponseWriter, r *http.Request) {
 	_, meBody, _ := s.do(r.Context(), http.MethodGet, "https://api.github.com/user",
 		map[string]string{"Authorization": "Bearer " + access, "Accept": "application/vnd.github+json"}, nil)
 	account := firstNonEmpty(jsonText(meBody, "login"), "GitHub User")
-	_ = s.persist(r.Context(), storedIntegration{
+	_ = s.persistOwned(r.Context(), ownerFromAuth(r), storedIntegration{
 		ProjectID: parseID(req.ProjectID), Provider: "github", Account: account,
 		BaseURL: "https://github.com", Username: account, AuthType: "oauth", AccessToken: access,
 	})
@@ -444,7 +443,7 @@ func (s *Service) FigmaOAuthExchange(w http.ResponseWriter, r *http.Request) {
 		map[string]string{"Authorization": "Bearer " + access}, nil)
 	account := firstNonEmpty(jsonText(meBody, "email"), jsonText(meBody, "handle"), "Figma User")
 	org := firstNonEmpty(parseFigmaTeamID(req.Organization), req.Organization)
-	_ = s.persist(r.Context(), storedIntegration{
+	_ = s.persistOwned(r.Context(), ownerFromAuth(r), storedIntegration{
 		ProjectID: parseID(req.ProjectID), Provider: "figma", Account: account,
 		BaseURL: "https://www.figma.com", Username: account, Organization: org,
 		AuthType: "oauth", AccessToken: access, RefreshToken: refresh, ExpiresAt: expiresAt,
@@ -597,7 +596,7 @@ func (s *Service) CreateJiraIssues(w http.ResponseWriter, r *http.Request) {
 		stored.Provider = "jira"
 		stored.ProjectKey = projectKey
 		if stored.AccessToken != "" {
-			_ = s.persist(r.Context(), stored)
+			_ = s.persistOwned(r.Context(), ownerFromAuth(r), stored)
 		}
 	}
 
@@ -846,7 +845,7 @@ func (s *Service) Binding(w http.ResponseWriter, r *http.Request) {
 			stored.SpaceKey = sk
 		}
 	}
-	if err := s.persist(r.Context(), stored); err != nil {
+	if err := s.persistOwned(r.Context(), ownerFromAuth(r), stored); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -1024,69 +1023,49 @@ func (s *Service) DeleteAllBlinkIssues(w http.ResponseWriter, r *http.Request) {
 // --- persistence ---
 
 func (s *Service) persist(ctx context.Context, in storedIntegration) error {
-	if in.ProjectID <= 0 || strings.TrimSpace(in.Provider) == "" {
-		return nil
-	}
-	existing, _ := s.load(ctx, in.ProjectID, in.Provider)
-	merged := mergeStored(existing, in)
-	accessEnc, err := s.seal(merged.AccessToken)
-	if err != nil {
+	return s.persistOwned(ctx, "", in)
+}
+
+func (s *Service) persistOwned(ctx context.Context, ownerEmail string, in storedIntegration) error {
+	if err := s.persistProjectOnly(ctx, in); err != nil {
 		return err
 	}
-	refreshEnc, err := s.seal(merged.RefreshToken)
-	if err != nil {
-		return err
+	owner := strings.TrimSpace(ownerEmail)
+	if owner == "" {
+		owner = s.projectOwner(ctx, in.ProjectID)
 	}
-	_, err = s.pool.Exec(ctx, `
-		INSERT INTO project_integration (
-			project_id, provider, account, base_url, email, username, organization, workspace,
-			project_key, project_name, space_key, cloud_id, auth_type,
-			access_token_enc, refresh_token_enc, expires_at, created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,NOW(),NOW())
-		ON CONFLICT (project_id, provider) DO UPDATE SET
-			account=EXCLUDED.account, base_url=EXCLUDED.base_url, email=EXCLUDED.email,
-			username=EXCLUDED.username, organization=EXCLUDED.organization, workspace=EXCLUDED.workspace,
-			project_key=EXCLUDED.project_key, project_name=EXCLUDED.project_name, space_key=EXCLUDED.space_key,
-			cloud_id=EXCLUDED.cloud_id, auth_type=EXCLUDED.auth_type,
-			access_token_enc=EXCLUDED.access_token_enc, refresh_token_enc=EXCLUDED.refresh_token_enc,
-			expires_at=EXCLUDED.expires_at, updated_at=NOW()
-	`, merged.ProjectID, merged.Provider, nullStr(merged.Account), nullStr(merged.BaseURL), nullStr(merged.Email),
-		nullStr(merged.Username), nullStr(merged.Organization), nullStr(merged.Workspace),
-		nullStr(merged.ProjectKey), nullStr(merged.ProjectName), nullStr(merged.SpaceKey), nullStr(merged.CloudID),
-		nullStr(merged.AuthType), nullStr(accessEnc), nullStr(refreshEnc), merged.ExpiresAt)
-	return err
+	if owner != "" {
+		_ = s.persistUser(ctx, owner, in)
+	}
+	return nil
 }
 
 func (s *Service) load(ctx context.Context, projectID int64, provider string) (storedIntegration, bool) {
-	var out storedIntegration
-	if projectID <= 0 || provider == "" {
-		return out, false
+	out, ok := s.loadProjectRow(ctx, projectID, provider)
+	if ok && strings.TrimSpace(out.AccessToken) != "" {
+		return out, true
 	}
-	var accessEnc, refreshEnc *string
-	err := s.pool.QueryRow(ctx, `
-		SELECT project_id, provider, COALESCE(account,''), COALESCE(base_url,''), COALESCE(email,''),
-			COALESCE(username,''), COALESCE(organization,''), COALESCE(workspace,''),
-			COALESCE(project_key,''), COALESCE(project_name,''), COALESCE(space_key,''), COALESCE(cloud_id,''),
-			COALESCE(auth_type,''), access_token_enc, refresh_token_enc, expires_at
-		FROM project_integration WHERE project_id=$1 AND provider=$2
-	`, projectID, strings.ToLower(provider)).Scan(
-		&out.ProjectID, &out.Provider, &out.Account, &out.BaseURL, &out.Email,
-		&out.Username, &out.Organization, &out.Workspace, &out.ProjectKey, &out.ProjectName,
-		&out.SpaceKey, &out.CloudID, &out.AuthType, &accessEnc, &refreshEnc, &out.ExpiresAt,
-	)
-	if err != nil {
-		if err == pgx.ErrNoRows {
-			return out, false
+	if owner := s.projectOwner(ctx, projectID); owner != "" {
+		if u, uok := s.loadUser(ctx, owner, provider); uok {
+			merged := mergeStored(out, u)
+			merged.ProjectID = projectID
+			// Keep project-specific binding fields when present.
+			if out.ProjectKey != "" {
+				merged.ProjectKey = out.ProjectKey
+			}
+			if out.ProjectName != "" {
+				merged.ProjectName = out.ProjectName
+			}
+			if out.Organization != "" {
+				merged.Organization = out.Organization
+			}
+			if out.SpaceKey != "" {
+				merged.SpaceKey = out.SpaceKey
+			}
+			return merged, true
 		}
-		return out, false
 	}
-	if accessEnc != nil {
-		out.AccessToken, _ = s.open(*accessEnc)
-	}
-	if refreshEnc != nil {
-		out.RefreshToken, _ = s.open(*refreshEnc)
-	}
-	return out, true
+	return out, ok
 }
 
 func (s *Service) seal(plain string) (string, error) {

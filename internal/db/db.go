@@ -26,6 +26,7 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	files := [][]string{
 		{"schema.sql", "src/main/resources/schema.sql", "./schema.sql", "../schema.sql"},
 		{"migrations/002_auth_sessions.sql", "./migrations/002_auth_sessions.sql"},
+		{"migrations/003_user_integrations.sql", "./migrations/003_user_integrations.sql"},
 	}
 	for _, candidates := range files {
 		body, path, err := readFirst(candidates)

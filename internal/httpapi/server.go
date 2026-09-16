@@ -105,7 +105,8 @@ func New(cfg config.Config, authSvc *auth.Service, proj *project.Service, agentC
 				prr.Get("/workspace-status", s.workspaceStatus)
 				prr.Post("/", s.createProject)
 				prr.Put("/{id}", s.updateProject)
-				prr.Get("/{id}", s.getProject)
+				prr.Get("/{id}/integrations", s.integ.ListForProject)
+				prr.Post("/{id}/integrations/apply", s.integ.ApplyUserToProject)
 				prr.Get("/{id}/governance-status", s.governanceStatus)
 				prr.Get("/{id}/workspace", s.projectWorkspace)
 				prr.Post("/{id}/configure-stakeholders", s.configureStakeholders)
@@ -113,9 +114,11 @@ func New(cfg config.Config, authSvc *auth.Service, proj *project.Service, agentC
 				prr.Post("/plan-product-scope", s.planProductScope)
 				prr.Post("/{id}/setup", s.setupProject)
 				prr.Post("/{id}/download", s.downloadProject)
+				prr.Get("/{id}", s.getProject)
 			})
 
 			pr.Route("/integrations", func(ir chi.Router) {
+				ir.Get("/", s.integ.ListMine)
 				ir.Post("/connect", s.integ.Connect)
 				ir.Post("/repositories", s.integ.CreateRepositories)
 				ir.Get("/jira/oauth/url", s.integ.JiraOAuthURL)
@@ -162,7 +165,9 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 			return
 		}
 		ctx := context.WithValue(r.Context(), sessionKey, sess)
-		next.ServeHTTP(w, r.WithContext(ctx))
+		r = r.WithContext(ctx)
+		r.Header.Set("X-Blink-Owner-Email", sess.Email)
+		next.ServeHTTP(w, r)
 	})
 }
 
@@ -294,6 +299,9 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := p.ID
+	if email := sessionEmail(r); email != "" {
+		_, _ = s.integ.ApplyUserConnections(r.Context(), email, id)
+	}
 	go s.s3.ProvisionAsync(context.Background(), p.ProjectName, &id)
 	writeJSON(w, http.StatusOK, p)
 }
