@@ -45,17 +45,17 @@ type Config struct {
 
 	IntegrationSecretKey string
 
-	SMTPHost       string
-	SMTPPort       int
-	SMTPUsername   string
-	SMTPPassword   string
-	SMTPFrom       string
-	SMTPStartTLS   bool
-	SMTPOutboxDir  string
+	SMTPHost      string
+	SMTPPort      int
+	SMTPUsername  string
+	SMTPPassword  string
+	SMTPFrom      string
+	SMTPStartTLS  bool
+	SMTPOutboxDir string
 
 	LoginAllowedDomain string
 	OTPttl             time.Duration
-	OTPResendCooldown   time.Duration
+	OTPResendCooldown  time.Duration
 	SessionTTL         time.Duration
 	OTPMaxAttempts     int
 	OTPReveal          bool
@@ -104,7 +104,7 @@ func Load() (Config, error) {
 		FigmaClientID:     os.Getenv("BLINK_FIGMA_CLIENT_ID"),
 		FigmaClientSecret: os.Getenv("BLINK_FIGMA_CLIENT_SECRET"),
 		FigmaRedirectURI:  os.Getenv("BLINK_FIGMA_REDIRECT_URI"),
-		FigmaScopes: env("BLINK_FIGMA_SCOPES", "current_user:read,file_content:read,file_metadata:read"),
+		FigmaScopes:       env("BLINK_FIGMA_SCOPES", "current_user:read,file_content:read,file_metadata:read"),
 
 		IntegrationSecretKey: os.Getenv("BLINK_INTEGRATION_SECRET_KEY"),
 
@@ -118,15 +118,16 @@ func Load() (Config, error) {
 
 		LoginAllowedDomain: env("BLINK_LOGIN_ALLOWED_DOMAIN", "talentserv.co.in"),
 		OTPttl:             durationEnv("BLINK_OTP_TTL", 5*time.Minute),
-		OTPResendCooldown:   durationEnv("BLINK_OTP_RESEND_COOLDOWN", 45*time.Second),
+		OTPResendCooldown:  durationEnv("BLINK_OTP_RESEND_COOLDOWN", 45*time.Second),
 		SessionTTL:         durationEnv("BLINK_SESSION_TTL", 12*time.Hour),
 		OTPMaxAttempts:     intEnv("BLINK_OTP_MAX_ATTEMPTS", 5),
-		OTPReveal:          boolEnv("BLINK_OTP_REVEAL", false),
+		OTPReveal:          false,
 		LoginGate:          os.Getenv("BLINK_LOGIN_GATE"),
 
 		DemoUserEmail: env("BLINK_DEMO_USER_EMAIL", "blink.system@talentserv.com"),
 		ProdMode:      boolEnv("BLINK_PROD", false) || strings.EqualFold(os.Getenv("RENDER"), "true"),
 	}
+	c.OTPReveal = otpRevealFromEnv(c.LoginGate)
 	if c.ProdMode {
 		if strings.TrimSpace(c.AgentRuntimeToken) == "" {
 			return c, errSecret("BLINK_AGENT_RUNTIME_TOKEN is required in production")
@@ -137,7 +138,6 @@ func Load() (Config, error) {
 		if strings.TrimSpace(c.IntegrationSecretKey) == "" {
 			fmt.Fprintln(os.Stderr, "warning: BLINK_INTEGRATION_SECRET_KEY unset in production; encrypted integrations will use an ephemeral default")
 		}
-		c.OTPReveal = false
 	}
 	return c, nil
 }
@@ -146,6 +146,26 @@ type secretError string
 
 func (e secretError) Error() string { return string(e) }
 func errSecret(msg string) error    { return secretError(msg) }
+
+// LocalMail is the temporary gated demo path: show the OTP on screen and skip SMTP.
+// Production currently uses this because a login gate is set. Set BLINK_OTP_REVEAL=false
+// later when real SMTP should send codes instead of revealing them.
+func (c Config) LocalMail() bool {
+	return c.OTPReveal && strings.TrimSpace(c.LoginGate) != ""
+}
+
+func otpRevealFromEnv(gate string) bool {
+	raw := strings.TrimSpace(os.Getenv("BLINK_OTP_REVEAL"))
+	if raw == "" {
+		return strings.TrimSpace(gate) != ""
+	}
+	switch strings.ToLower(raw) {
+	case "1", "true", "yes":
+		return true
+	default:
+		return false
+	}
+}
 
 func env(k, def string) string {
 	if v := strings.TrimSpace(os.Getenv(k)); v != "" {

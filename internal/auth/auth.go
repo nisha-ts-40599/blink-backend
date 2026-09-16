@@ -94,14 +94,14 @@ func (s *Service) RequestOTP(ctx context.Context, req OTPRequest) (*OTPRequestRe
 	}
 
 	mode := "smtp"
-	if strings.TrimSpace(s.cfg.SMTPHost) == "" {
-		if !(s.cfg.OTPReveal && strings.TrimSpace(s.cfg.LoginGate) != "") {
-			return nil, fmt.Errorf("%w: sign-in email is not configured", ErrBadRequest)
-		}
+	if s.cfg.LocalMail() {
 		mode = "local"
+	} else if strings.TrimSpace(s.cfg.SMTPHost) == "" {
+		return nil, fmt.Errorf("%w: sign-in email is not configured", ErrBadRequest)
 	} else if s.mail != nil {
 		if err := s.mail.SendOTP(ctx, email, otp); err != nil {
-			return nil, err
+			_, _ = s.pool.Exec(ctx, `DELETE FROM blink_otp_challenge WHERE email=$1`, email)
+			return nil, fmt.Errorf("%w: could not send sign-in email", ErrBadRequest)
 		}
 	}
 
@@ -111,9 +111,10 @@ func (s *Service) RequestOTP(ctx context.Context, req OTPRequest) (*OTPRequestRe
 		ExpiresInSeconds:   int(s.cfg.OTPttl.Seconds()),
 		ResendAfterSeconds: int(s.cfg.OTPResendCooldown.Seconds()),
 	}
-	if s.cfg.OTPReveal && strings.TrimSpace(s.cfg.LoginGate) != "" {
+	if s.cfg.LocalMail() {
 		resp.OTP = &otp
 		resp.DeliveryMode = "local"
+		resp.Message = "Demo code is shown below. Email OTP is off until SMTP is enabled."
 	}
 	return resp, nil
 }

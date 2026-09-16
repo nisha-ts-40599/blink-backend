@@ -254,23 +254,18 @@ func (s *Server) stakeholderRoles(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) sendStakeholderQuestions(w http.ResponseWriter, r *http.Request) {
-	var body map[string]any
+	var body struct {
+		Questions []mailer.QuestionItem `json:"questions"`
+	}
 	if err := readJSON(r, &body); err != nil {
 		writeErr(w, err)
 		return
 	}
-	to, _ := body["email"].(string)
-	subject, _ := body["subject"].(string)
-	msg, _ := body["body"].(string)
-	if to == "" || subject == "" || msg == "" {
-		writeErr(w, fmt.Errorf("email, subject, and body are required"))
+	if len(body.Questions) == 0 {
+		writeErr(w, fmt.Errorf("questions are required"))
 		return
 	}
-	if err := s.mail.SendStakeholder(r.Context(), to, subject, msg); err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+	writeJSON(w, http.StatusOK, s.mail.SendQuestions(r.Context(), body.Questions))
 }
 
 func (s *Server) groomClarify(w http.ResponseWriter, r *http.Request) {
