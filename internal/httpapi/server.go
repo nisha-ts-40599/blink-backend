@@ -16,6 +16,7 @@ import (
 	"github.com/go-chi/cors"
 	"github.com/nisha-ts-40599/blink-backend/internal/agent"
 	"github.com/nisha-ts-40599/blink-backend/internal/auth"
+	"github.com/nisha-ts-40599/blink-backend/internal/chat"
 	"github.com/nisha-ts-40599/blink-backend/internal/config"
 	"github.com/nisha-ts-40599/blink-backend/internal/integrations"
 	"github.com/nisha-ts-40599/blink-backend/internal/mailer"
@@ -32,10 +33,11 @@ type Server struct {
 	mail   *mailer.Service
 	integ  *integrations.Service
 	s3     *s3ws.Service
+	chat   *chat.Store
 }
 
-func New(cfg config.Config, authSvc *auth.Service, proj *project.Service, agentClient *agent.Client, mail *mailer.Service, integ *integrations.Service, s3 *s3ws.Service) http.Handler {
-	s := &Server{cfg: cfg, auth: authSvc, proj: proj, agent: agentClient, mail: mail, integ: integ, s3: s3}
+func New(cfg config.Config, authSvc *auth.Service, proj *project.Service, agentClient *agent.Client, mail *mailer.Service, integ *integrations.Service, s3 *s3ws.Service, chatStore *chat.Store) http.Handler {
+	s := &Server{cfg: cfg, auth: authSvc, proj: proj, agent: agentClient, mail: mail, integ: integ, s3: s3, chat: chatStore}
 	r := chi.NewRouter()
 	r.Use(chimw.RequestID, chimw.RealIP, chimw.Logger, chimw.Recoverer)
 	r.Use(cors.Handler(cors.Options{
@@ -118,6 +120,9 @@ func New(cfg config.Config, authSvc *auth.Service, proj *project.Service, agentC
 				prr.Post("/{id}/technical-plan", s.technicalPlan)
 				prr.Post("/{id}/setup", s.setupProject)
 				prr.Post("/{id}/download", s.downloadProject)
+				prr.Get("/{id}/chat", s.getProjectChat)
+				prr.Post("/{id}/chat/messages", s.postProjectChatMessage)
+				prr.Delete("/{id}/chat/messages", s.clearProjectChat)
 				prr.Get("/{id}", s.getProject)
 			})
 

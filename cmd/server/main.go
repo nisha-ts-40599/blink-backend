@@ -12,6 +12,7 @@ import (
 
 	"github.com/nisha-ts-40599/blink-backend/internal/agent"
 	"github.com/nisha-ts-40599/blink-backend/internal/auth"
+	"github.com/nisha-ts-40599/blink-backend/internal/chat"
 	"github.com/nisha-ts-40599/blink-backend/internal/config"
 	"github.com/nisha-ts-40599/blink-backend/internal/crypto"
 	"github.com/nisha-ts-40599/blink-backend/internal/db"
@@ -55,15 +56,17 @@ func main() {
 	agentClient := agent.New(cfg)
 	integ := integrations.New(pool, cfg, box)
 	s3svc := s3ws.New(cfg)
-	handler := httpapi.New(cfg, authSvc, proj, agentClient, mail, integ, s3svc)
+	chatStore := chat.New(pool)
+	handler := httpapi.New(cfg, authSvc, proj, agentClient, mail, integ, s3svc, chatStore)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       60 * time.Second,
-		WriteTimeout:      120 * time.Second,
-		IdleTimeout:       90 * time.Second,
+		// Chat SSE can last several minutes; do not bound the whole response write window.
+		ReadTimeout:  0,
+		WriteTimeout: 0,
+		IdleTimeout:  120 * time.Second,
 	}
 
 	go func() {
