@@ -167,3 +167,45 @@ func (s *Server) technicalPlan(w http.ResponseWriter, r *http.Request) {
 	raw, err := s.agent.TechnicalPlan(r.Context(), payload)
 	s.writeAgentResult(w, r, p.ProjectName, id, raw, err)
 }
+
+func (s *Server) sdlcStart(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	p, err := s.proj.RequireOwned(r.Context(), id, sessionEmail(r))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if !s.requireReadyWorkspace(w, r, p.ProjectName, id) {
+		return
+	}
+	var body map[string]any
+	_ = readJSON(r, &body)
+	payload := s.advisoryPayload(r, p.ProjectName, id, body)
+	raw, err := s.agent.SdlcStart(r.Context(), payload)
+	s.writeAgentResult(w, r, p.ProjectName, id, raw, err)
+}
+
+func (s *Server) sdlcNext(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	p, err := s.proj.RequireOwned(r.Context(), id, sessionEmail(r))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if !s.requireReadyWorkspace(w, r, p.ProjectName, id) {
+		return
+	}
+	var body map[string]any
+	_ = readJSON(r, &body)
+	payload := s.advisoryPayload(r, p.ProjectName, id, body)
+	raw, err := s.agent.SdlcNext(r.Context(), payload)
+	s.writeAgentResult(w, r, p.ProjectName, id, raw, err)
+}

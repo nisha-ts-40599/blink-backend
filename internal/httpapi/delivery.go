@@ -179,9 +179,9 @@ func (s *Server) gitApply(w http.ResponseWriter, r *http.Request) {
 
 	evidence := map[string]any{}
 	if key := strings.TrimSpace(body.IssueKey); key != "" {
-		comment := fmt.Sprintf("Blink G-BOOTSTRAP: overlay committed to %s/%s@%s (%d files).\n%s",
+		comment := fmt.Sprintf("Blink overlay commit: %s/%s@%s (%d files).\n%s\n(Not a G-BOOTSTRAP gate approval.)",
 			owner, repo, result.SHA, result.TreeCount, result.URL)
-		if cid, e := s.integ.PostJiraGateEvidence(r.Context(), id, key, "G-BOOTSTRAP", comment); e == nil {
+		if cid, e := s.integ.PostJiraGateEvidence(r.Context(), id, key, "G-PR-OPEN", comment); e == nil {
 			evidence["jiraCommentId"] = cid
 			evidence["issueKey"] = key
 		} else {

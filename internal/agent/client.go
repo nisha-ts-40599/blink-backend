@@ -162,6 +162,22 @@ func (c *Client) QaValidation(ctx context.Context, payload map[string]any) (json
 	return c.Invoke(ctx, payload)
 }
 
+func (c *Client) SdlcStart(ctx context.Context, payload map[string]any) (json.RawMessage, error) {
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	payload["command"] = "sdlc-start"
+	return c.Invoke(ctx, payload)
+}
+
+func (c *Client) SdlcNext(ctx context.Context, payload map[string]any) (json.RawMessage, error) {
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	payload["command"] = "sdlc-next"
+	return c.Invoke(ctx, payload)
+}
+
 func (c *Client) SummarizeDiscussion(ctx context.Context, payload map[string]any) (json.RawMessage, error) {
 	if payload == nil {
 		payload = map[string]any{}
