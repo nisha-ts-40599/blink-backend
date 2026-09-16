@@ -138,6 +138,8 @@ func New(cfg config.Config, authSvc *auth.Service, proj *project.Service, agentC
 				ir.Post("/jira/issues", s.integ.CreateJiraIssues)
 				ir.Post("/jira/comments", s.integ.CreateJiraComment)
 				ir.Post("/jira/comments/poll", s.integ.PollJiraComments)
+				ir.Post("/jira/comments/reset-simulated", s.integ.ResetSimulatedJiraReplies)
+				ir.Post("/jira/discussions/summarize", s.summarizeDiscussion)
 				ir.Post("/binding", s.integ.Binding)
 			})
 
