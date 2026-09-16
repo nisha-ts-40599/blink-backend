@@ -105,6 +105,16 @@ func (c *Client) do(ctx context.Context, method, path string, body any) (int, []
 	return res.StatusCode, raw, nil
 }
 
+func isEmptyGitHubRepo(status int, raw []byte) bool {
+	if status == http.StatusNotFound {
+		return true
+	}
+	if status != http.StatusConflict {
+		return false
+	}
+	return strings.Contains(strings.ToLower(string(raw)), "git repository is empty")
+}
+
 func (c *Client) DefaultBranch(ctx context.Context, owner, repo string) (string, error) {
 	status, raw, err := c.do(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/%s", owner, repo), nil)
 	if err != nil {
@@ -138,6 +148,17 @@ func (c *Client) CommitFiles(ctx context.Context, owner, repo, branch, message s
 	if err != nil {
 		return nil, err
 	}
+	if isEmptyGitHubRepo(status, raw) {
+		first, rest := files[0], files[1:]
+		init, err := c.commitViaContents(ctx, owner, repo, branch, message, first)
+		if err != nil {
+			return nil, err
+		}
+		if len(rest) == 0 {
+			return init, nil
+		}
+		return c.CommitFiles(ctx, owner, repo, branch, message, rest)
+	}
 	baseSHA := ""
 	if status == 200 {
 		var ref map[string]any
@@ -145,9 +166,6 @@ func (c *Client) CommitFiles(ctx context.Context, owner, repo, branch, message s
 		if obj, ok := ref["object"].(map[string]any); ok {
 			baseSHA, _ = obj["sha"].(string)
 		}
-	} else if status == 404 {
-		// Empty / missing branch: create from scratch after blob/tree/commit.
-		baseSHA = ""
 	} else {
 		return nil, fmt.Errorf("GitHub ref lookup HTTP %d: %s", status, truncate(string(raw), 200))
 	}
@@ -263,6 +281,49 @@ func (c *Client) CommitFiles(ctx context.Context, owner, repo, branch, message s
 		Owner:     owner,
 		Repo:      repo,
 		TreeCount: len(files),
+	}, nil
+}
+
+func (c *Client) commitViaContents(ctx context.Context, owner, repo, branch, message string, file File) (*CommitResult, error) {
+	path := strings.TrimSpace(strings.TrimPrefix(file.Path, "/"))
+	if path == "" || strings.Contains(path, "..") {
+		return nil, fmt.Errorf("invalid path %q", file.Path)
+	}
+	body := map[string]any{
+		"message": message,
+		"content": base64.StdEncoding.EncodeToString([]byte(file.Content)),
+	}
+	if strings.TrimSpace(branch) != "" {
+		body["branch"] = branch
+	}
+	status, raw, err := c.do(ctx, http.MethodPut, fmt.Sprintf("/repos/%s/%s/contents/%s", owner, repo, path), body)
+	if err != nil {
+		return nil, err
+	}
+	if status >= 400 {
+		return nil, fmt.Errorf("GitHub contents init HTTP %d: %s", status, truncate(string(raw), 240))
+	}
+	var payload map[string]any
+	_ = json.Unmarshal(raw, &payload)
+	sha := ""
+	htmlURL := ""
+	if commit, ok := payload["commit"].(map[string]any); ok {
+		sha, _ = commit["sha"].(string)
+		htmlURL, _ = commit["html_url"].(string)
+	}
+	if sha == "" {
+		return nil, fmt.Errorf("contents init returned empty commit sha")
+	}
+	if branch == "" {
+		branch = "main"
+	}
+	return &CommitResult{
+		SHA:       sha,
+		URL:       htmlURL,
+		Branch:    branch,
+		Owner:     owner,
+		Repo:      repo,
+		TreeCount: 1,
 	}, nil
 }
 

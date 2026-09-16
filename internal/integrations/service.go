@@ -174,7 +174,12 @@ func (s *Service) CreateRepositories(w http.ResponseWriter, r *http.Request) {
 		if name == "" {
 			continue
 		}
-		body, _ := json.Marshal(map[string]any{"name": name, "description": spec.Description, "private": true})
+		body, _ := json.Marshal(map[string]any{
+			"name":        name,
+			"description": spec.Description,
+			"private":     true,
+			"auto_init":   true,
+		})
 		status, resp, err := s.do(r.Context(), http.MethodPost, endpoint, headers, body)
 		if err != nil {
 			results = append(results, map[string]any{
@@ -403,8 +408,7 @@ func (s *Service) FigmaOAuthURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	redirect := s.resolveRedirect("figma", r.URL.Query().Get("redirectUri"), publicAPIBase(r))
-	scopes := firstNonEmpty(s.cfg.FigmaScopes,
-		"current_user:read,file_comments:read,file_comments:write,file_content:read,file_dev_resources:read,file_dev_resources:write,file_metadata:read,file_versions:read")
+	scopes := normalizeFigmaScopes(firstNonEmpty(s.cfg.FigmaScopes, figmaDefaultScopes))
 	u := "https://www.figma.com/oauth" +
 		"?client_id=" + url.QueryEscape(clientID) +
 		"&redirect_uri=" + url.QueryEscape(redirect) +
