@@ -112,6 +112,7 @@ func New(cfg config.Config, authSvc *auth.Service, proj *project.Service, agentC
 				prr.Get("/{id}/governance-status", s.governanceStatus)
 				prr.Get("/{id}/workspace", s.projectWorkspace)
 				prr.Post("/{id}/configure-stakeholders", s.configureStakeholders)
+				prr.Post("/{id}/confirm-stakeholders", s.confirmStakeholders)
 				prr.Post("/{id}/plan-product-scope", s.planProductScopeID)
 				prr.Post("/plan-product-scope", s.planProductScope)
 				prr.Post("/{id}/confirm-product-scope", s.confirmProductScope)
@@ -408,6 +409,29 @@ func (s *Server) configureStakeholders(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(raw)
+}
+
+func (s *Server) confirmStakeholders(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	p, err := s.proj.RequireOwned(r.Context(), id, sessionEmail(r))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	stakes := make([]map[string]string, 0, len(p.Stakeholders))
+	for _, st := range p.Stakeholders {
+		stakes = append(stakes, map[string]string{"role_id": st.RoleCode, "name": st.Name, "email": st.Email})
+	}
+	var body map[string]any
+	_ = readJSON(r, &body)
+	payload := s.advisoryPayload(r, p.ProjectName, id, body)
+	payload["stakeholders"] = stakes
+	raw, err := s.agent.ConfirmStakeholders(r.Context(), payload)
+	s.writeAgentResult(w, r, p.ProjectName, id, raw, err)
 }
 
 func (s *Server) planProductScopeID(w http.ResponseWriter, r *http.Request) {

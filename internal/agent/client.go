@@ -178,6 +178,14 @@ func (c *Client) SdlcNext(ctx context.Context, payload map[string]any) (json.Raw
 	return c.Invoke(ctx, payload)
 }
 
+func (c *Client) ConfirmStakeholders(ctx context.Context, payload map[string]any) (json.RawMessage, error) {
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	payload["command"] = "confirm-stakeholders"
+	return c.Invoke(ctx, payload)
+}
+
 func (c *Client) SummarizeDiscussion(ctx context.Context, payload map[string]any) (json.RawMessage, error) {
 	if payload == nil {
 		payload = map[string]any{}
