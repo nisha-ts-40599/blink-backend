@@ -1284,6 +1284,46 @@ func (s *Service) load(ctx context.Context, projectID int64, provider string) (s
 	return out, ok
 }
 
+// GitHubCreds returns the vaulted GitHub access token and organization for a project.
+func (s *Service) GitHubCreds(ctx context.Context, projectID int64) (token, org string, ok bool) {
+	stored, found := s.load(ctx, projectID, "github")
+	token = strings.TrimSpace(stored.AccessToken)
+	org = strings.TrimSpace(stored.Organization)
+	return token, org, found && token != ""
+}
+
+// PostJiraGateEvidence posts a best-effort Blink→Jira gate evidence comment. Never fails the caller hard.
+func (s *Service) PostJiraGateEvidence(ctx context.Context, projectID int64, issueKey, gate, body string) (commentID string, err error) {
+	issueKey = strings.TrimSpace(issueKey)
+	body = strings.TrimSpace(body)
+	gate = strings.TrimSpace(gate)
+	if issueKey == "" || body == "" {
+		return "", fmt.Errorf("issueKey and body required")
+	}
+	if gate != "" && !strings.Contains(body, gate) {
+		body = "[" + gate + "]\n" + body
+	}
+	ctxJ, err := s.resolveJiraOwned(ctx, projectID, map[string]any{}, "")
+	if err != nil {
+		return "", err
+	}
+	payload, _ := json.Marshal(map[string]any{"body": adfDocument(body)})
+	status, resp, err := s.do(ctx, http.MethodPost,
+		ctxJ.APIBase+"/rest/api/3/issue/"+url.PathEscape(issueKey)+"/comment",
+		withJSON(ctxJ.Headers), payload)
+	if err != nil || status < 200 || status >= 300 {
+		return "", fmt.Errorf("jira comment HTTP %d: %s", status, firstNonEmpty(jsonText(resp, "message"), errString(err)))
+	}
+	return firstNonEmpty(jsonText(resp, "id"), fmt.Sprintf("%v", jsonRaw(resp, "id"))), nil
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
 func (s *Service) seal(plain string) (string, error) {
 	if strings.TrimSpace(plain) == "" {
 		return "", nil
