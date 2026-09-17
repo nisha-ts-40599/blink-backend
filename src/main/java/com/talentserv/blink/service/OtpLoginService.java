@@ -82,7 +82,7 @@ public class OtpLoginService {
         if (properties.isOtpReveal()) {
             log.info("Demo OTP reveal is on for {}", email);
             return new OtpRequestResponse(
-                    "Demo OTP is on. Use this code. Set BLINK_OTP_REVEAL=false when SMTP is ready.",
+                    "We issued a one-time password.",
                     "local",
                     (int) ttl.toSeconds(),
                     (int) cooldown.toSeconds(),
@@ -110,7 +110,7 @@ public class OtpLoginService {
             log.warn("OTP email failed for {}: {}", email, ex.toString());
             throw new ApiException(
                     HttpStatus.BAD_GATEWAY,
-                    "Could not send the sign-in code. Check SMTP settings and try again."
+                    "Could not send the sign-in code. Try again in a moment."
             );
         }
         if (!"smtp".equals(delivery.deliveryMode())) {
@@ -118,7 +118,7 @@ public class OtpLoginService {
             log.warn("OTP email skipped for {}; SMTP is not configured", email);
             throw new ApiException(
                     HttpStatus.SERVICE_UNAVAILABLE,
-                    "Sign-in email is not configured on this server."
+                    "Could not send the sign-in code. Try again in a moment."
             );
         }
         log.info("Sent sign-in OTP to {} via smtp", email);

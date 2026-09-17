@@ -1,9 +1,12 @@
 package com.talentserv.blink.error;
 
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -13,6 +16,8 @@ import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+
+    private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
     @ExceptionHandler(ApiException.class)
     ResponseEntity<Map<String, String>> handleApi(ApiException ex) {
@@ -50,8 +55,22 @@ public class GlobalExceptionHandler {
         if (message == null || message.isBlank()) {
             message = root.getClass().getSimpleName();
         }
+        log.warn("Unhandled error: {}", ex.toString());
+        if (looksLikeTransportDetail(message)) {
+            message = "Something went wrong. Try again.";
+        }
         Map<String, String> body = new LinkedHashMap<>();
         body.put("message", message);
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(body);
+    }
+
+    private static boolean looksLikeTransportDetail(String message) {
+        String lower = message.toLowerCase(Locale.ROOT);
+        return lower.contains("smtp")
+                || lower.contains("port 587")
+                || lower.contains("port 465")
+                || lower.contains("office 365")
+                || lower.contains("javamail")
+                || lower.contains("mail.smtp");
     }
 }
