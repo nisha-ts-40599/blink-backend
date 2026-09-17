@@ -52,6 +52,8 @@ services:
         sync: false
       - key: BLINK_SMTP_FROM
         sync: false
+      - key: BLINK_SMTP_ENABLED
+        value: "false"
       - key: BLINK_LOGIN_GATE
         sync: false
       - key: BLINK_JIRA_REDIRECT_URI

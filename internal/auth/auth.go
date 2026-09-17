@@ -47,7 +47,7 @@ func (s *Service) Config() map[string]any {
 	return map[string]any{
 		"allowedDomain": s.cfg.LoginAllowedDomain,
 		"gateRequired":  strings.TrimSpace(s.cfg.LoginGate) != "",
-		"otpReveal":     s.cfg.OTPReveal && strings.TrimSpace(s.cfg.LoginGate) != "",
+		"otpReveal":     s.cfg.LocalMail(),
 	}
 }
 
