@@ -18,5 +18,7 @@ COPY migrations /app/migrations
 COPY src/main/resources/schema.sql /app/src/main/resources/schema.sql
 ENV BLINK_AUTOMATION_SDLC_PATH=/app/automation_sdlc
 ENV BLINK_PROD=true
+RUN git clone --depth 1 https://github.com/AtulTalentServ/automation_sdlc.git /app/automation_sdlc \
+    || echo "kit clone skipped; runtime will retry"
 EXPOSE 8090
 ENTRYPOINT ["/app/blink-backend"]

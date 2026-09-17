@@ -4,11 +4,13 @@ import (
 	"archive/zip"
 	"bytes"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 const (
@@ -82,28 +84,20 @@ func PackageWorkspace(
 	structure = append(structure, WorkspaceEntry{Name: "requirement.md", Kind: "file"})
 
 	sdlc := resolveAutomationSDLC(automationSDLCPath)
-	if sdlc != "" {
-		copied, err := copyTree(zw, sdlc, zipPath(root, "automation_sdlc"), map[string]struct{}{".cursor": {}}, map[string]struct{}{".env.mcp.example": {}}, &files)
-		if err != nil {
-			_ = zw.Close()
-			return nil, err
-		}
-		if copied == 0 {
-			if err := putText(zw, zipPath(root, "automation_sdlc/README.md"), missing("automation_sdlc")); err != nil {
-				_ = zw.Close()
-				return nil, err
-			}
-			files++
-		}
-		structure = append(structure, WorkspaceEntry{Name: "automation_sdlc", Kind: "directory"})
-	} else {
-		if err := putText(zw, zipPath(root, "automation_sdlc/README.md"), missing("automation_sdlc")); err != nil {
-			_ = zw.Close()
-			return nil, err
-		}
-		files++
-		structure = append(structure, WorkspaceEntry{Name: "automation_sdlc", Kind: "directory"})
+	if sdlc == "" || !LooksReal(sdlc) {
+		_ = zw.Close()
+		return nil, fmt.Errorf("automation_sdlc kit is missing — set BLINK_AUTOMATION_SDLC_PATH or BLINK_AUTOMATION_SDLC_GIT_URL")
 	}
+	copied, err := copyTree(zw, sdlc, zipPath(root, "automation_sdlc"), map[string]struct{}{".cursor": {}}, map[string]struct{}{".env.mcp.example": {}}, &files)
+	if err != nil {
+		_ = zw.Close()
+		return nil, err
+	}
+	if copied == 0 {
+		_ = zw.Close()
+		return nil, fmt.Errorf("automation_sdlc kit at %s had no files to copy", sdlc)
+	}
+	structure = append(structure, WorkspaceEntry{Name: "automation_sdlc", Kind: "directory"})
 
 	if err := addCursorOverlay(zw, root, sdlc, &files, &structure); err != nil {
 		_ = zw.Close()
@@ -180,13 +174,9 @@ func addCursorOverlay(zw *zip.Writer, root, sdlc string, files *int, structure *
 		}
 		copied = n
 	}
-	if copied == 0 {
-		if err := putText(zw, zipPath(root, ".cursor/README.md"), missing(".cursor")); err != nil {
-			return err
-		}
-		*files++
+	if copied > 0 {
+		*structure = append(*structure, WorkspaceEntry{Name: ".cursor", Kind: "directory"})
 	}
-	*structure = append(*structure, WorkspaceEntry{Name: ".cursor", Kind: "directory"})
 	return nil
 }
 
@@ -328,18 +318,22 @@ func resolveAutomationSDLC(configured string) string {
 }
 
 func resolveCursorOverlay(sdlc string) string {
+	if sdlc != "" {
+		nested := filepath.Join(sdlc, ".cursor")
+		if hasCursorCommands(nested) {
+			return nested
+		}
+	}
 	cwd, _ := os.Getwd()
 	if cwd != "" {
 		ws := filepath.Join(cwd, ".cursor")
-		if hasCursorContent(ws) {
+		if hasCursorCommands(ws) {
 			return ws
 		}
 		if parent := filepath.Dir(cwd); parent != "" && parent != cwd {
 			sib := filepath.Join(parent, ".cursor")
-			if hasCursorContent(sib) {
-				if st, err := os.Stat(filepath.Join(sib, "commands")); err == nil && st.IsDir() {
-					return sib
-				}
+			if hasCursorCommands(sib) {
+				return sib
 			}
 		}
 	}
@@ -350,6 +344,11 @@ func resolveCursorOverlay(sdlc string) string {
 		}
 	}
 	return ""
+}
+
+func hasCursorCommands(dir string) bool {
+	st, err := os.Stat(filepath.Join(dir, "commands"))
+	return err == nil && st.IsDir()
 }
 
 func hasCursorContent(dir string) bool {
@@ -387,7 +386,7 @@ func copyTree(zw *zip.Writer, srcRoot, zipPrefix string, extraSkipDirs, skipFile
 			parent = filepath.Base(parentRel)
 		}
 		if d.IsDir() {
-			if skipDirectory(name, parent) {
+			if SkipDirectory(name, parent) {
 				return filepath.SkipDir
 			}
 			if extraSkipDirs != nil {
@@ -397,7 +396,7 @@ func copyTree(zw *zip.Writer, srcRoot, zipPrefix string, extraSkipDirs, skipFile
 			}
 			return nil
 		}
-		if skipFile(name) {
+		if SkipFile(name) {
 			return nil
 		}
 		if skipFileNames != nil {
@@ -417,39 +416,60 @@ func copyTree(zw *zip.Writer, srcRoot, zipPrefix string, extraSkipDirs, skipFile
 }
 
 func putText(zw *zip.Writer, name, content string) error {
-	w, err := zw.Create(name)
-	if err != nil {
-		return err
-	}
-	_, err = io.WriteString(w, content)
-	return err
+	return putBytes(zw, name, []byte(content), 0o644)
 }
 
 func putDir(zw *zip.Writer, name string) error {
-	_, err := zw.Create(name)
+	name = strings.ReplaceAll(name, `\`, "/")
+	if !strings.HasSuffix(name, "/") {
+		name += "/"
+	}
+	h := &zip.FileHeader{
+		Name:   name,
+		Method: zip.Store,
+	}
+	h.SetModTime(time.Unix(0, 0).UTC())
+	h.SetMode(os.ModeDir | 0o755)
+	_, err := zw.CreateHeader(h)
 	return err
 }
 
 func putFile(zw *zip.Writer, name, src string) error {
-	f, err := os.Open(src)
+	body, err := os.ReadFile(src)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	w, err := zw.Create(name)
+	mode := os.FileMode(0o644)
+	if st, err := os.Stat(src); err == nil {
+		mode = st.Mode()
+	}
+	return putBytes(zw, name, body, mode)
+}
+
+func putBytes(zw *zip.Writer, name string, body []byte, mode os.FileMode) error {
+	name = strings.ReplaceAll(name, `\`, "/")
+	if mode == 0 {
+		mode = 0o644
+	}
+	h := &zip.FileHeader{
+		Name:               name,
+		Method:             zip.Store,
+		CRC32:              crc32.ChecksumIEEE(body),
+		CompressedSize64:   uint64(len(body)),
+		UncompressedSize64: uint64(len(body)),
+	}
+	h.SetModTime(time.Unix(0, 0).UTC())
+	h.SetMode(mode)
+	w, err := zw.CreateHeader(h)
 	if err != nil {
 		return err
 	}
-	_, err = io.Copy(w, f)
+	_, err = w.Write(body)
 	return err
 }
 
 func zipPath(root, relative string) string {
 	return root + "/" + strings.ReplaceAll(relative, `\`, "/")
-}
-
-func missing(folder string) string {
-	return fmt.Sprintf("# %s\n\nBlink could not find this folder to copy into the download.\n", folder)
 }
 
 func ensureStruct(structure *[]WorkspaceEntry, name, kind string) {
