@@ -10,7 +10,7 @@ var skipDirNames = map[string]struct{}{
 	"tests": {}, "examples": {}, "fixtures": {}, "blink_demo": {}, "blink_backend": {}, "blink-backend": {},
 }
 
-func skipDirectory(name, parentName string) bool {
+func SkipDirectory(name, parentName string) bool {
 	if name == "" {
 		return true
 	}
@@ -24,7 +24,7 @@ func skipDirectory(name, parentName string) bool {
 	return ok
 }
 
-func skipFile(name string) bool {
+func SkipFile(name string) bool {
 	if name == "" {
 		return true
 	}

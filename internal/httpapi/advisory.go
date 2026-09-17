@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/nisha-ts-40599/blink-backend/internal/s3ws"
+	"github.com/nisha-ts-40599/blink-backend/internal/zipkit"
 )
 
 func overlaysFromAgentJSON(raw json.RawMessage) []s3ws.OverlayFile {
@@ -24,7 +25,7 @@ func overlaysFromAgentJSON(raw json.RawMessage) []s3ws.OverlayFile {
 		}
 		path, _ := m["path"].(string)
 		content, _ := m["content"].(string)
-		path = strings.TrimSpace(path)
+		path = zipkit.SanitizeOverlayPath(path)
 		if path == "" {
 			continue
 		}

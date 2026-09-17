@@ -5,27 +5,29 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/nisha-ts-40599/blink-backend/internal/project"
+	"github.com/nisha-ts-40599/blink-backend/internal/setupproj"
 	"github.com/nisha-ts-40599/blink-backend/internal/zipkit"
 )
 
 type setupAgentResponse struct {
-	RunID              *string           `json:"runId"`
-	Command            *string           `json:"command"`
-	Status             *string           `json:"status"`
-	ContextReady       *bool             `json:"contextReady"`
-	DeliveryReady      *bool             `json:"deliveryReady"`
-	GitWritten         *bool             `json:"gitWritten"`
-	IdentitySource     *string           `json:"identitySource"`
-	OverlayFiles       []overlayFileJSON `json:"overlayFiles"`
-	AcceptedFileCount  int               `json:"acceptedFileCount"`
-	NextCommand        *string           `json:"nextCommand"`
-	Message            *string           `json:"message"`
-	Errors             []string          `json:"errors"`
+	RunID             *string           `json:"runId"`
+	Command           *string           `json:"command"`
+	Status            *string           `json:"status"`
+	ContextReady      *bool             `json:"contextReady"`
+	DeliveryReady     *bool             `json:"deliveryReady"`
+	GitWritten        *bool             `json:"gitWritten"`
+	IdentitySource    *string           `json:"identitySource"`
+	OverlayFiles      []overlayFileJSON `json:"overlayFiles"`
+	AcceptedFileCount int               `json:"acceptedFileCount"`
+	NextCommand       *string           `json:"nextCommand"`
+	Message           *string           `json:"message"`
+	Errors            []string          `json:"errors"`
 }
 
 type overlayFileJSON struct {
@@ -60,9 +62,20 @@ func (s *Server) setupProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, _ := s.runSetup(r.Context(), p, strings.TrimSpace(req.RequirementText), nil)
+	kitPath, err := zipkit.Ensure(s.cfg.AutomationSDLCPath, s.cfg.AutomationSDLCGit)
+	if err != nil {
+		writeErr(w, fmt.Errorf("workspace kit is not ready: %w", err))
+		return
+	}
+	s.cfg.AutomationSDLCPath = kitPath
+	resp, overlay, err := s.runSetup(r.Context(), p, strings.TrimSpace(req.RequirementText), nil, kitPath)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
 	if s.s3.Enabled() {
-		go s.s3.ProvisionAsync(context.Background(), p.ProjectName, &id)
+		s.s3.ProvisionAsync(context.Background(), p.ProjectName, &id)
+		s.s3.PutCursorOverlayAsync(p.ProjectName, &id, overlay)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -111,10 +124,31 @@ func (s *Server) downloadProject(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	setup, overlay := s.runSetup(r.Context(), p, markdown, blinkCtx)
+	kitPath, err := zipkit.Ensure(s.cfg.AutomationSDLCPath, s.cfg.AutomationSDLCGit)
+	if err != nil {
+		writeErr(w, fmt.Errorf("workspace kit is not ready: %w", err))
+		return
+	}
+	s.cfg.AutomationSDLCPath = kitPath
 
+	setup, setupOverlay, err := s.runSetup(r.Context(), p, markdown, blinkCtx, kitPath)
+	if err != nil {
+		writeErr(w, fmt.Errorf("Canonical workspace setup was not validated: %w", err))
+		return
+	}
+
+	s3Overlay := map[string]string{}
 	if s.s3.Enabled() {
-		go s.s3.ProvisionAsync(context.Background(), p.ProjectName, &id)
+		if listed, lerr := s.s3.ListCursorOverlays(r.Context(), p.ProjectName, &id); lerr == nil {
+			s3Overlay = listed
+		}
+		s.s3.ProvisionAsync(context.Background(), p.ProjectName, &id)
+		s.s3.PutRequirementAsync(p.ProjectName, &id, markdown)
+		s.s3.PutFrameworkCommandsAsync(p.ProjectName, &id, kitPath)
+	}
+	overlay := zipkit.MergeOverlays(s3Overlay, setupOverlay)
+	if s.s3.Enabled() {
+		s.s3.PutCursorOverlayAsync(p.ProjectName, &id, overlay)
 	}
 
 	repos := toRepoFolders(r.Form["repoName"], r.Form["repoPurpose"], r.Form["repoDescription"])
@@ -128,7 +162,7 @@ func (s *Server) downloadProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	root := project.Folder(p.ProjectName, &id)
-	bundle, err := zipkit.PackageWorkspace(root, markdown, repos, overlay, mcpProviders, hints, s.cfg.AutomationSDLCPath)
+	bundle, err := zipkit.PackageWorkspace(root, markdown, repos, overlay, mcpProviders, hints, kitPath)
 	if err != nil {
 		writeErr(w, fmt.Errorf("failed to package workspace: %w", err))
 		return
@@ -163,6 +197,8 @@ func (s *Server) downloadProject(w http.ResponseWriter, r *http.Request) {
 		folderStatus = s.s3.FolderStatus(p.ProjectName, &id)
 	}
 
+	validated := status == "ok" || status == "overlay_ready"
+
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, bundle.Filename))
 	w.Header().Set("Content-Length", strconv.Itoa(len(bundle.ZipBytes)))
@@ -171,8 +207,8 @@ func (s *Server) downloadProject(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Blink-Next-Command", nextCommand)
 	w.Header().Set("X-Blink-Setup-Status", status)
 	w.Header().Set("X-Blink-Identity-Source", identity)
-	w.Header().Set("X-Blink-Overlay-Count", strconv.Itoa(len(overlay)))
-	w.Header().Set("X-Blink-Setup-Validated", "true")
+	w.Header().Set("X-Blink-Overlay-Count", strconv.Itoa(zipkit.OverlayCount(overlay)))
+	w.Header().Set("X-Blink-Setup-Validated", strconv.FormatBool(validated))
 	w.Header().Set("X-Blink-Context-Ready", strconv.FormatBool(ctxReady))
 	w.Header().Set("X-Blink-Delivery-Ready", strconv.FormatBool(delivReady))
 	w.Header().Set("X-Blink-Folder-Status", folderStatus)
@@ -180,43 +216,71 @@ func (s *Server) downloadProject(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(bundle.ZipBytes)
 }
 
-func (s *Server) runSetup(ctx context.Context, p *project.ProjectResponse, requirementText string, blinkContext map[string]any) (setupAgentResponse, map[string]string) {
-	payload := map[string]any{
-		"command":     "setup-new-workspace",
-		"mode":        "apply",
-		"projectName": p.ProjectName,
-		"projectId":   strconv.FormatInt(p.ID, 10),
-	}
-	if requirementText != "" {
-		payload["requirementText"] = requirementText
-	}
-	if blinkContext != nil {
-		payload["blinkContext"] = blinkContext
-	}
-	stakes := make([]map[string]string, 0, len(p.Stakeholders))
-	for _, st := range p.Stakeholders {
-		stakes = append(stakes, map[string]string{
-			"role_id": st.RoleCode,
-			"name":    st.Name,
-			"email":   st.Email,
-		})
-	}
-	payload["stakeholders"] = stakes
+func (s *Server) runSetup(ctx context.Context, p *project.ProjectResponse, requirementText string, blinkContext map[string]any, kit string) (setupAgentResponse, map[string]string, error) {
+	payload := setupproj.HostedPayload(
+		p.ProjectName,
+		"",
+		strconv.FormatInt(p.ID, 10),
+		p.Description,
+		requirementText,
+		blinkContext,
+	)
 
-	raw, err := s.agent.SetupNewWorkspace(ctx, payload)
+	raw, agentErr := s.agent.SetupNewWorkspace(ctx, payload)
+	if agentErr == nil {
+		var loose map[string]any
+		if err := json.Unmarshal(raw, &loose); err == nil {
+			resp := parseSetupResponse(loose)
+			overlay := overlayMap(resp.OverlayFiles)
+			status := ""
+			if resp.Status != nil {
+				status = *resp.Status
+			}
+			if (status == "ok" || status == "overlay_ready") && setupproj.HasRequired(overlay) {
+				return resp, overlay, nil
+			}
+			log.Printf("canonical setup agent status=%q overlay=%d, using local projector", status, len(overlay))
+		} else {
+			log.Printf("canonical setup agent JSON invalid (%v), using local projector", err)
+		}
+	} else {
+		log.Printf("canonical setup agent unavailable (%v), using local projector", agentErr)
+	}
+
+	proj, err := setupproj.Apply(ctx, kit, s.cfg.CanonicalPython, s.cfg.CanonicalTimeout, payload)
 	if err != nil {
-		return stubSetup(p, requirementText), stubOverlay(p, requirementText)
+		return setupUnavailable(err), map[string]string{}, err
 	}
-	var loose map[string]any
-	if err := json.Unmarshal(raw, &loose); err != nil {
-		return stubSetup(p, requirementText), stubOverlay(p, requirementText)
+	return projectorResponse(proj), proj.Overlay, nil
+}
+
+func projectorResponse(proj setupproj.Result) setupAgentResponse {
+	status := proj.Status
+	cmd := "setup-new-workspace"
+	next := proj.NextCommand
+	if next == "" {
+		next = zipkit.NextSDLCCommand
 	}
-	status, _ := loose["status"].(string)
-	if status != "ok" && status != "overlay_ready" {
-		return stubSetup(p, requirementText), stubOverlay(p, requirementText)
+	src := proj.IdentitySource
+	ctxReady := proj.ContextReady
+	delivReady := proj.DeliveryReady
+	msg := proj.Message
+	files := make([]overlayFileJSON, 0, len(proj.Overlay))
+	for path, content := range proj.Overlay {
+		files = append(files, overlayFileJSON{Path: path, Content: content})
 	}
-	resp := parseSetupResponse(loose)
-	return resp, overlayMap(resp.OverlayFiles)
+	return setupAgentResponse{
+		Command:           &cmd,
+		Status:            &status,
+		ContextReady:      &ctxReady,
+		DeliveryReady:     &delivReady,
+		IdentitySource:    &src,
+		OverlayFiles:      files,
+		AcceptedFileCount: len(files),
+		NextCommand:       &next,
+		Message:           &msg,
+		Errors:            proj.Errors,
+	}
 }
 
 func parseSetupResponse(root map[string]any) setupAgentResponse {
@@ -260,50 +324,28 @@ func parseSetupResponse(root map[string]any) setupAgentResponse {
 	return resp
 }
 
-func stubSetup(p *project.ProjectResponse, requirementText string) setupAgentResponse {
-	overlay := stubOverlay(p, requirementText)
-	files := make([]overlayFileJSON, 0, len(overlay))
-	for path, content := range overlay {
-		files = append(files, overlayFileJSON{Path: path, Content: content})
-	}
-	status := "ok"
+func setupUnavailable(err error) setupAgentResponse {
+	status := "unavailable"
 	cmd := "setup-new-workspace"
 	next := zipkit.NextSDLCCommand
-	src := "blink-go-stub"
-	ctxReady := true
-	delivReady := true
-	msg := "Canonical setup agent unavailable; delivered Blink stub overlay."
+	src := "hosted-agent"
+	ctxReady := false
+	delivReady := false
+	msg := "Canonical setup agent unavailable."
+	if err != nil && strings.TrimSpace(err.Error()) != "" {
+		msg = strings.TrimSpace(err.Error())
+	}
 	return setupAgentResponse{
 		Command:           &cmd,
 		Status:            &status,
 		ContextReady:      &ctxReady,
 		DeliveryReady:     &delivReady,
 		IdentitySource:    &src,
-		OverlayFiles:      files,
-		AcceptedFileCount: len(files),
+		OverlayFiles:      nil,
+		AcceptedFileCount: 0,
 		NextCommand:       &next,
 		Message:           &msg,
-		Errors:            []string{},
-	}
-}
-
-func stubOverlay(p *project.ProjectResponse, requirementText string) map[string]string {
-	name := p.ProjectName
-	req := strings.TrimSpace(requirementText)
-	if req == "" {
-		req = "# " + name + "\n"
-	}
-	return map[string]string{
-		".cursor/ai-sdlc/setup/project-initialisation-input.yaml": fmt.Sprintf(
-			"projectName: %q\nprojectId: %d\nsource: blink-go-stub\n", name, p.ID),
-		".cursor/ai-sdlc/setup/setup-result.yaml": fmt.Sprintf(
-			"status: ok\nprojectName: %q\nmessage: stub overlay from Blink Go backend\n", name),
-		".cursor/ai-sdlc/setup/setup-response-contract.yaml": "version: 1\nstatus: ok\n",
-		".cursor/ai-sdlc/governance/role-registry.yaml":      "roles: []\n",
-		".cursor/ai-sdlc/greenfield-project-spec.yaml": fmt.Sprintf(
-			"projectName: %q\ndescription: %q\n", name, p.Description),
-		".cursor/ai-sdlc/intake/requirements/requirement-source-history.yaml": fmt.Sprintf(
-			"sources:\n  - kind: blink-download\n    preview: |\n%s\n", indentBlock(req, 6)),
+		Errors:            []string{msg},
 	}
 }
 
@@ -344,15 +386,6 @@ func formValue(r *http.Request, key string) string {
 		}
 	}
 	return r.FormValue(key)
-}
-
-func indentBlock(s string, spaces int) string {
-	pad := strings.Repeat(" ", spaces)
-	lines := strings.Split(s, "\n")
-	for i, line := range lines {
-		lines[i] = pad + line
-	}
-	return strings.Join(lines, "\n")
 }
 
 func strPtr(v any) *string {

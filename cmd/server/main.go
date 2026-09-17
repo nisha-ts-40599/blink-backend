@@ -21,6 +21,7 @@ import (
 	"github.com/nisha-ts-40599/blink-backend/internal/mailer"
 	"github.com/nisha-ts-40599/blink-backend/internal/project"
 	"github.com/nisha-ts-40599/blink-backend/internal/s3ws"
+	"github.com/nisha-ts-40599/blink-backend/internal/zipkit"
 )
 
 func main() {
@@ -56,6 +57,12 @@ func main() {
 	agentClient := agent.New(cfg)
 	integ := integrations.New(pool, cfg, box)
 	s3svc := s3ws.New(cfg)
+	if kit, err := zipkit.Ensure(cfg.AutomationSDLCPath, cfg.AutomationSDLCGit); err != nil {
+		log.Printf("warning: automation_sdlc kit not ready yet: %v", err)
+	} else {
+		cfg.AutomationSDLCPath = kit
+		s3svc = s3ws.New(cfg)
+	}
 	chatStore := chat.New(pool)
 	handler := httpapi.New(cfg, authSvc, proj, agentClient, mail, integ, s3svc, chatStore)
 

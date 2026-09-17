@@ -375,12 +375,21 @@ func (s *Server) projectWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.s3.Status(p.ProjectName, &id))
+	writeJSON(w, http.StatusOK, s.s3.Progress(p.ProjectName, &id))
 }
 
 func (s *Server) workspaceStatus(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("projectName")
-	writeJSON(w, http.StatusOK, s.s3.Status(name, nil))
+	var idPtr *int64
+	if raw := strings.TrimSpace(r.URL.Query().Get("projectId")); raw != "" {
+		if n, err := strconv.ParseInt(raw, 10, 64); err == nil && n > 0 {
+			idPtr = &n
+		}
+	}
+	if strings.TrimSpace(name) != "" {
+		s.s3.EnsureProvisioned(r.Context(), name, idPtr)
+	}
+	writeJSON(w, http.StatusOK, s.s3.Progress(name, idPtr))
 }
 
 func (s *Server) workspaceTree(w http.ResponseWriter, r *http.Request) {
