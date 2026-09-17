@@ -26,14 +26,14 @@ import (
 )
 
 type Server struct {
-	cfg    config.Config
-	auth   *auth.Service
-	proj   *project.Service
-	agent  *agent.Client
-	mail   *mailer.Service
-	integ  *integrations.Service
-	s3     *s3ws.Service
-	chat   *chat.Store
+	cfg   config.Config
+	auth  *auth.Service
+	proj  *project.Service
+	agent *agent.Client
+	mail  *mailer.Service
+	integ *integrations.Service
+	s3    *s3ws.Service
+	chat  *chat.Store
 }
 
 func New(cfg config.Config, authSvc *auth.Service, proj *project.Service, agentClient *agent.Client, mail *mailer.Service, integ *integrations.Service, s3 *s3ws.Service, chatStore *chat.Store) http.Handler {
@@ -67,11 +67,16 @@ func New(cfg config.Config, authSvc *auth.Service, proj *project.Service, agentC
 		if strings.EqualFold(os.Getenv("RENDER"), "true") {
 			uiHint = "https://blink-ui.onrender.com"
 		}
+		mail := "smtp"
+		if s.cfg.LocalMail() {
+			mail = "local"
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"service": "blink-backend",
 			"status":  "UP",
 			"hint":    "This is the Blink API only. Open the UI at " + uiHint,
 			"health":  "/actuator/health",
+			"mail":    mail,
 		})
 	})
 	r.Get("/actuator/health", func(w http.ResponseWriter, _ *http.Request) {

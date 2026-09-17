@@ -52,6 +52,7 @@ type Config struct {
 	SMTPFrom      string
 	SMTPStartTLS  bool
 	SMTPOutboxDir string
+	SMTPEnabled   bool
 
 	LoginAllowedDomain string
 	OTPttl             time.Duration
@@ -115,6 +116,7 @@ func Load() (Config, error) {
 		SMTPFrom:      env("BLINK_SMTP_FROM", "blink@localhost"),
 		SMTPStartTLS:  boolEnv("BLINK_SMTP_START_TLS", true),
 		SMTPOutboxDir: env("BLINK_SMTP_OUTBOX_DIR", ".blink-outbox"),
+		SMTPEnabled:   boolEnv("BLINK_SMTP_ENABLED", false),
 
 		LoginAllowedDomain: env("BLINK_LOGIN_ALLOWED_DOMAIN", "talentserv.co.in"),
 		OTPttl:             durationEnv("BLINK_OTP_TTL", 5*time.Minute),
@@ -147,11 +149,13 @@ type secretError string
 func (e secretError) Error() string { return string(e) }
 func errSecret(msg string) error    { return secretError(msg) }
 
-// LocalMail is the temporary gated demo path: show the OTP on screen and skip SMTP.
-// Production currently uses this because a login gate is set. Set BLINK_OTP_REVEAL=false
-// later when real SMTP should send codes instead of revealing them.
+// LocalMail shows the OTP on screen and skips SMTP while a login gate is set.
+// Set BLINK_SMTP_ENABLED=true later to send real email instead.
 func (c Config) LocalMail() bool {
-	return c.OTPReveal && strings.TrimSpace(c.LoginGate) != ""
+	if c.SMTPEnabled {
+		return false
+	}
+	return strings.TrimSpace(c.LoginGate) != ""
 }
 
 func otpRevealFromEnv(gate string) bool {
