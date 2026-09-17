@@ -9,8 +9,12 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/lambda"
 	"github.com/nisha-ts-40599/blink-backend/internal/config"
 )
 
@@ -18,6 +22,8 @@ type Client struct {
 	cfg          config.Config
 	client       *http.Client
 	streamClient *http.Client
+	lambdaOnce   sync.Once
+	lambda       *lambda.Client
 }
 
 func New(cfg config.Config) *Client {
@@ -41,6 +47,9 @@ func (c *Client) Invoke(ctx context.Context, payload map[string]any) (json.RawMe
 	if strings.TrimSpace(c.cfg.AgentRuntimeToken) == "" {
 		return nil, fmt.Errorf("BLINK_AGENT_RUNTIME_TOKEN is not configured")
 	}
+	if shouldInvokeLambda(c.cfg, c.cfg.AgentRuntimeURL) {
+		return c.invokeLambda(ctx, payload)
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
@@ -63,6 +72,46 @@ func (c *Client) Invoke(ctx context.Context, payload map[string]any) (json.RawMe
 		return nil, fmt.Errorf("agent runtime HTTP %d: %s", res.StatusCode, truncate(string(raw), 400))
 	}
 	return json.RawMessage(raw), nil
+}
+
+func (c *Client) invokeLambda(ctx context.Context, payload map[string]any) (json.RawMessage, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	event, err := wrapAPIGWv2(body, strings.TrimSpace(c.cfg.AgentRuntimeToken))
+	if err != nil {
+		return nil, err
+	}
+	c.lambdaOnce.Do(func() {
+		c.lambda = lambda.New(lambda.Options{
+			Region: c.cfg.AWSRegion,
+			Credentials: credentials.NewStaticCredentialsProvider(
+				strings.TrimSpace(c.cfg.AWSAccessKeyID),
+				strings.TrimSpace(c.cfg.AWSSecretAccessKey),
+				"",
+			),
+			HTTPClient: &http.Client{Timeout: 95 * time.Second},
+		})
+	})
+	out, err := c.lambda.Invoke(ctx, &lambda.InvokeInput{
+		FunctionName: aws.String(strings.TrimSpace(c.cfg.AgentLambdaName)),
+		Payload:      event,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("agent runtime Lambda invoke: %w", err)
+	}
+	if out.FunctionError != nil && strings.TrimSpace(*out.FunctionError) != "" {
+		return nil, fmt.Errorf("agent runtime Lambda failed: %s", *out.FunctionError)
+	}
+	status, inner, err := unwrapLambdaPayload(out.Payload)
+	if err != nil {
+		return nil, err
+	}
+	if status >= 400 {
+		return nil, fmt.Errorf("agent runtime HTTP %d: %s", status, truncate(string(inner), 400))
+	}
+	return json.RawMessage(inner), nil
 }
 
 func (c *Client) Clarify(ctx context.Context, body map[string]any) (json.RawMessage, error) {
