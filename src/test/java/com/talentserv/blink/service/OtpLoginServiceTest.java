@@ -59,7 +59,7 @@ class OtpLoginServiceTest {
         OtpLoginService noMail = new OtpLoginService(properties, new StakeholderEmailService(properties), clock);
         assertThatThrownBy(() -> noMail.requestOtp("ada@talentserv.co.in"))
                 .isInstanceOf(ApiException.class)
-                .hasMessageContaining("not configured");
+                .hasMessageContaining("Could not send the sign-in code");
     }
 
     @Test
