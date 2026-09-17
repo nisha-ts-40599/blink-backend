@@ -279,6 +279,25 @@ func (s *Server) groomClarify(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	if wantsSSE(r) {
+		_, writeSSE, ok := startSSE(w)
+		if !ok {
+			writeErr(w, fmt.Errorf("streaming is not supported on this connection"))
+			return
+		}
+		raw, err := s.agent.ClarifyStream(r.Context(), body, func(delta string) error {
+			if !writeSSE("thinking", map[string]any{"text": delta}) {
+				return fmt.Errorf("client disconnected")
+			}
+			return nil
+		})
+		if err != nil {
+			_ = writeSSE("error", map[string]any{"message": err.Error()})
+			return
+		}
+		_ = writeSSE("done", json.RawMessage(raw))
+		return
+	}
 	raw, err := s.agent.Clarify(r.Context(), body)
 	if err != nil {
 		writeErr(w, err)
@@ -457,6 +476,26 @@ func (s *Server) planProductScopeID(w http.ResponseWriter, r *http.Request) {
 	var body map[string]any
 	_ = readJSON(r, &body)
 	reqText, _ := body["requirementText"].(string)
+	if wantsSSE(r) {
+		_, writeSSE, ok := startSSE(w)
+		if !ok {
+			writeErr(w, fmt.Errorf("streaming is not supported on this connection"))
+			return
+		}
+		raw, err := s.agent.PlanProductScopeStream(r.Context(), p.ProjectName, strconv.FormatInt(id, 10), reqText, sessionEmail(r), func(delta string) error {
+			if !writeSSE("thinking", map[string]any{"text": delta}) {
+				return fmt.Errorf("client disconnected")
+			}
+			return nil
+		})
+		if err != nil {
+			_ = writeSSE("error", map[string]any{"message": err.Error()})
+			return
+		}
+		s.persistAgentOverlays(r, p.ProjectName, id, raw)
+		_ = writeSSE("done", json.RawMessage(raw))
+		return
+	}
 	raw, err := s.agent.PlanProductScope(r.Context(), p.ProjectName, strconv.FormatInt(id, 10), reqText, sessionEmail(r))
 	if err != nil {
 		writeErr(w, err)
@@ -475,6 +514,25 @@ func (s *Server) planProductScope(w http.ResponseWriter, r *http.Request) {
 	}
 	name, _ := body["projectName"].(string)
 	reqText, _ := body["requirementText"].(string)
+	if wantsSSE(r) {
+		_, writeSSE, ok := startSSE(w)
+		if !ok {
+			writeErr(w, fmt.Errorf("streaming is not supported on this connection"))
+			return
+		}
+		raw, err := s.agent.PlanProductScopeStream(r.Context(), name, "", reqText, sessionEmail(r), func(delta string) error {
+			if !writeSSE("thinking", map[string]any{"text": delta}) {
+				return fmt.Errorf("client disconnected")
+			}
+			return nil
+		})
+		if err != nil {
+			_ = writeSSE("error", map[string]any{"message": err.Error()})
+			return
+		}
+		_ = writeSSE("done", json.RawMessage(raw))
+		return
+	}
 	raw, err := s.agent.PlanProductScope(r.Context(), name, "", reqText, sessionEmail(r))
 	if err != nil {
 		writeErr(w, err)
