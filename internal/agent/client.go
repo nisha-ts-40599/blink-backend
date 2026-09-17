@@ -386,6 +386,107 @@ func (c *Client) ChatTurnStream(ctx context.Context, payload map[string]any, onT
 	return result, nil
 }
 
+// CommandStream POSTs to agent /sdlc/stream and forwards thinking deltas.
+func (c *Client) CommandStream(ctx context.Context, payload map[string]any, onThinking func(string) error) (json.RawMessage, error) {
+	if strings.TrimSpace(c.cfg.AgentRuntimeToken) == "" {
+		return nil, fmt.Errorf("BLINK_AGENT_RUNTIME_TOKEN is not configured")
+	}
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+
+	url := strings.TrimRight(c.cfg.AgentRuntimeURL, "/") + "/sdlc/stream"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "Blink-Backend-Go/1.0")
+	req.Header.Set("Authorization", "Bearer "+c.cfg.AgentRuntimeToken)
+	req.Header.Set("Cache-Control", "no-cache")
+
+	res, err := c.streamClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode >= 400 {
+		raw, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
+		return nil, fmt.Errorf("agent runtime HTTP %d: %s", res.StatusCode, truncate(string(raw), 400))
+	}
+
+	var done json.RawMessage
+	var gotDone bool
+	err = readSSE(res.Body, func(event string, data []byte) error {
+		switch event {
+		case "thinking":
+			var payload struct {
+				Text string `json:"text"`
+			}
+			if err := json.Unmarshal(data, &payload); err != nil || payload.Text == "" || onThinking == nil {
+				return nil
+			}
+			return onThinking(payload.Text)
+		case "error":
+			return nil
+		case "done":
+			gotDone = true
+			done = append(json.RawMessage(nil), data...)
+			return nil
+		default:
+			return nil
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !gotDone || len(done) == 0 {
+		return nil, fmt.Errorf("agent stream ended without a done event")
+	}
+	return done, nil
+}
+
+func (c *Client) ClarifyStream(ctx context.Context, body map[string]any, onThinking func(string) error) (json.RawMessage, error) {
+	if body == nil {
+		body = map[string]any{}
+	}
+	body["command"] = "clarify-requirement"
+	if _, ok := body["mode"]; !ok {
+		body["mode"] = "discovery"
+	}
+	raw, err := c.CommandStream(ctx, body, onThinking)
+	if err == nil {
+		return raw, nil
+	}
+	return c.Clarify(ctx, body)
+}
+
+func (c *Client) PlanProductScopeStream(ctx context.Context, projectName, projectID, requirementText, actor string, onThinking func(string) error) (json.RawMessage, error) {
+	payload := map[string]any{
+		"command":     "plan-product-scope",
+		"projectName": projectName,
+	}
+	if projectID != "" {
+		payload["projectId"] = projectID
+	}
+	if requirementText != "" {
+		payload["requirementText"] = requirementText
+	}
+	if actor != "" {
+		payload["actor"] = actor
+	}
+	raw, err := c.CommandStream(ctx, payload, onThinking)
+	if err == nil {
+		return raw, nil
+	}
+	return c.PlanProductScope(ctx, projectName, projectID, requirementText, actor)
+}
+
 func readSSE(r io.Reader, handle func(event string, data []byte) error) error {
 	scanner := bufio.NewScanner(r)
 	// LLM tokens / JSON frames can be large.

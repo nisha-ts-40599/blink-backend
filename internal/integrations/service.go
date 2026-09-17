@@ -316,7 +316,7 @@ func (s *Service) JiraOAuthExchange(w http.ResponseWriter, r *http.Request) {
 	})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"connected": true, "provider": "jira", "account": account,
-		"detail": "Connected with Atlassian OAuth as " + account + " to " + firstNonEmpty(siteName, siteURL),
+		"detail":     "Connected with Atlassian OAuth as " + account + " to " + firstNonEmpty(siteName, siteURL),
 		"projectKey": projectKey, "projectName": projectName, "baseUrl": siteURL, "cloudId": cloudID,
 		"authType": "oauth", "accessToken": nil, "projects": projects,
 	})
@@ -631,6 +631,51 @@ func (s *Service) CreateJiraIssues(w http.ResponseWriter, r *http.Request) {
 	errors := make([]string, 0)
 	epicKeys := map[string]string{}
 
+	total := 0
+	for _, epic := range req.Epics {
+		if strings.TrimSpace(str(epic["title"])) != "" {
+			total++
+		}
+	}
+	for _, story := range req.Stories {
+		if strings.TrimSpace(str(story["title"])) != "" {
+			total++
+		}
+	}
+
+	stream := strings.Contains(strings.ToLower(r.Header.Get("Accept")), "text/event-stream")
+	var writeSSE func(event string, payload any) bool
+	if stream {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			stream = false
+		} else {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache, no-transform")
+			w.Header().Set("Connection", "keep-alive")
+			w.Header().Set("X-Accel-Buffering", "no")
+			w.WriteHeader(http.StatusOK)
+			flusher.Flush()
+			writeSSE = func(event string, payload any) bool {
+				b, err := json.Marshal(payload)
+				if err != nil {
+					return false
+				}
+				if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, b); err != nil {
+					return false
+				}
+				flusher.Flush()
+				return true
+			}
+			_ = writeSSE("start", map[string]any{"total": total, "projectKey": projectKey})
+		}
+	}
+	emitItem := func(item map[string]any) {
+		if writeSSE != nil {
+			_ = writeSSE("item", item)
+		}
+	}
+
 	refreshedOnce := false
 	tryCreate := func(issueType, title, desc, parent, id string) (map[string]any, error) {
 		item, err := s.createJiraIssue(r.Context(), ctxJ, projectKey, issueType, title, desc, parent)
@@ -671,6 +716,7 @@ func (s *Service) CreateJiraIssues(w http.ResponseWriter, r *http.Request) {
 				"id": id, "sourceId": id, "jiraKey": nil, "url": nil, "jiraUrl": nil,
 				"type": "Epic", "status": "failed", "message": err.Error(),
 			})
+			emitItem(created[len(created)-1])
 			continue
 		}
 		item["id"] = id
@@ -683,6 +729,7 @@ func (s *Service) CreateJiraIssues(w http.ResponseWriter, r *http.Request) {
 		if key := str(item["jiraKey"]); key != "" && id != "" {
 			epicKeys[id] = key
 		}
+		emitItem(item)
 	}
 
 	for _, story := range req.Stories {
@@ -702,10 +749,12 @@ func (s *Service) CreateJiraIssues(w http.ResponseWriter, r *http.Request) {
 		item, err := tryCreate("Story", title, desc, parent, id)
 		if err != nil {
 			errors = append(errors, title+": "+err.Error())
-			created = append(created, map[string]any{
+			failed := map[string]any{
 				"id": id, "sourceId": id, "jiraKey": nil, "url": nil, "jiraUrl": nil,
 				"type": "Story", "status": "failed", "message": err.Error(),
-			})
+			}
+			created = append(created, failed)
+			emitItem(failed)
 			continue
 		}
 		item["id"] = id
@@ -715,6 +764,7 @@ func (s *Service) CreateJiraIssues(w http.ResponseWriter, r *http.Request) {
 			item["jiraUrl"] = u
 		}
 		created = append(created, item)
+		emitItem(item)
 	}
 
 	ok := 0
@@ -737,21 +787,26 @@ func (s *Service) CreateJiraIssues(w http.ResponseWriter, r *http.Request) {
 	} else {
 		msg += "."
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"status": status, "message": msg, "created": created, "errors": errors, "issues": created})
+	result := map[string]any{"status": status, "message": msg, "created": created, "errors": errors, "issues": created, "total": total, "linked": ok}
+	if stream && writeSSE != nil {
+		_ = writeSSE("done", result)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Service) CreateJiraComment(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		ProjectID        any    `json:"projectId"`
-		IssueKey         string `json:"issueKey"`
-		Body             string `json:"body"`
-		BlinkQuestionID  string `json:"blinkQuestionId"`
-		ParentCommentID  string `json:"parentCommentId"`
-		BaseURL          string `json:"baseUrl"`
-		Email            string `json:"email"`
-		Token            string `json:"token"`
-		CloudID          string `json:"cloudId"`
-		AccessToken      string `json:"accessToken"`
+		ProjectID       any    `json:"projectId"`
+		IssueKey        string `json:"issueKey"`
+		Body            string `json:"body"`
+		BlinkQuestionID string `json:"blinkQuestionId"`
+		ParentCommentID string `json:"parentCommentId"`
+		BaseURL         string `json:"baseUrl"`
+		Email           string `json:"email"`
+		Token           string `json:"token"`
+		CloudID         string `json:"cloudId"`
+		AccessToken     string `json:"accessToken"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
@@ -949,9 +1004,9 @@ func (s *Service) ResetSimulatedJiraReplies(w http.ResponseWriter, r *http.Reque
 		CloudID     string `json:"cloudId"`
 		AccessToken string `json:"accessToken"`
 		Items       []struct {
-			IssueKey         string `json:"issueKey"`
-			BlinkQuestionID  string `json:"blinkQuestionId"`
-			ReplyCommentID   string `json:"replyCommentId"`
+			IssueKey        string `json:"issueKey"`
+			BlinkQuestionID string `json:"blinkQuestionId"`
+			ReplyCommentID  string `json:"replyCommentId"`
 		} `json:"items"`
 	}
 	if err := readJSON(r, &req); err != nil {
