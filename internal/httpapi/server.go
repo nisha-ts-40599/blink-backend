@@ -510,6 +510,8 @@ func writeErr(w http.ResponseWriter, err error) {
 		msg = "Sign in to continue."
 	case errors.Is(err, auth.ErrForbidden):
 		status = http.StatusForbidden
+	case strings.Contains(strings.ToLower(msg), "agent runtime"):
+		status = http.StatusBadGateway
 	case strings.Contains(strings.ToLower(msg), "not found"):
 		status = http.StatusNotFound
 	case strings.Contains(strings.ToLower(msg), "forbidden"):
