@@ -11,6 +11,18 @@ func TestLocalMailOnWhenGateSetUnlessSMTPEnabled(t *testing.T) {
 	if off.LocalMail() {
 		t.Fatal("SMTPEnabled must send real email")
 	}
+	gmail := Config{
+		LoginGate:         "gate",
+		GmailClientID:     "id",
+		GmailClientSecret: "secret",
+		GmailRefreshToken: "1//refresh",
+	}
+	if gmail.LocalMail() {
+		t.Fatal("Gmail OAuth must send real email")
+	}
+	if !gmail.GmailConfigured() {
+		t.Fatal("expected GmailConfigured")
+	}
 	if (Config{}).LocalMail() {
 		t.Fatal("no gate means no LocalMail")
 	}
