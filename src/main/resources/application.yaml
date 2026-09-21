@@ -78,6 +78,11 @@ blink:
   smtp-from: ${BLINK_SMTP_FROM:blink@localhost}
   smtp-start-tls: ${BLINK_SMTP_START_TLS:true}
   smtp-outbox-dir: ${BLINK_SMTP_OUTBOX_DIR:.blink-outbox}
+  gmail-client-id: ${BLINK_GMAIL_CLIENT_ID:}
+  gmail-client-secret: ${BLINK_GMAIL_CLIENT_SECRET:}
+  gmail-refresh-token: ${BLINK_GMAIL_REFRESH_TOKEN:}
+  gmail-from: ${BLINK_GMAIL_FROM:}
+  gmail-redirect-uri: ${BLINK_GMAIL_REDIRECT_URI:}
   login-allowed-domain: ${BLINK_LOGIN_ALLOWED_DOMAIN:talentserv.co.in}
   otp-ttl: ${BLINK_OTP_TTL:5m}
   otp-resend-cooldown: ${BLINK_OTP_RESEND_COOLDOWN:45s}

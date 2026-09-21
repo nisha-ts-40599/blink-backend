@@ -67,6 +67,7 @@ public class GlobalExceptionHandler {
     private static boolean looksLikeTransportDetail(String message) {
         String lower = message.toLowerCase(Locale.ROOT);
         return lower.contains("smtp")
+                || lower.contains("gmail")
                 || lower.contains("port 587")
                 || lower.contains("port 465")
                 || lower.contains("office 365")

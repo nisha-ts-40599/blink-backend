@@ -89,6 +89,57 @@ class StakeholderEmailServiceTest {
         assertThat(saved).contains("To: ada@talentserv.co.in");
     }
 
+    @Test
+    void sendTextUsesGmailOauthWhenConfigured() {
+        BlinkProperties props = new BlinkProperties();
+        props.setSmtpHost("smtp.example.com");
+        props.setGmailClientId("client-id");
+        props.setGmailClientSecret("client-secret");
+        props.setGmailRefreshToken("1//refresh");
+        props.setGmailFrom("blink.mailer@gmail.com");
+        RecordingHttp http = new RecordingHttp();
+        http.token = "{\"access_token\":\"ya29.access\",\"expires_in\":3600}";
+        http.send = "{\"id\":\"msg-1\"}";
+        StakeholderEmailService service = new StakeholderEmailService(props, new GmailOAuthMailer(props, http));
+
+        StakeholderEmailService.TextMailResult result = service.sendText(
+                "ada@talentserv.co.in",
+                "Your Blink sign-in code",
+                "123456"
+        );
+
+        assertThat(result.deliveryMode()).isEqualTo("gmail");
+        assertThat(http.sentToGmail).isTrue();
+    }
+
+    private static final class RecordingHttp implements IntegrationHttpGateway {
+        private String token = "";
+        private String send = "";
+        private boolean sentToGmail;
+
+        @Override
+        public IntegrationHttpResponse get(String url, Map<String, String> headers) {
+            return new IntegrationHttpResponse(404, "");
+        }
+
+        @Override
+        public IntegrationHttpResponse post(String url, Map<String, String> headers, String jsonBody) {
+            return post(url, headers, jsonBody, "application/json");
+        }
+
+        @Override
+        public IntegrationHttpResponse post(String url, Map<String, String> headers, String body, String contentType) {
+            if (url.contains("oauth2.googleapis.com/token")) {
+                return new IntegrationHttpResponse(200, token);
+            }
+            if (url.contains("gmail.googleapis.com")) {
+                sentToGmail = true;
+                return new IntegrationHttpResponse(200, send);
+            }
+            return new IntegrationHttpResponse(500, "");
+        }
+    }
+
     private static StakeholderQuestionSendItem item(String id, String email, String name) {
         return new StakeholderQuestionSendItem(
                 id,

@@ -95,6 +95,16 @@ public class BlinkProperties {
     private String smtpOutboxDir = ".blink-outbox";
 
     /**
+     * One Gmail mailbox used to send login OTPs over the Gmail API (OAuth refresh token).
+     * Preferred over SMTP on Render, which often blocks outbound SMTP.
+     */
+    private String gmailClientId = "";
+    private String gmailClientSecret = "";
+    private String gmailRefreshToken = "";
+    private String gmailFrom = "";
+    private String gmailRedirectUri = "";
+
+    /**
      * Sign-in is limited to this email domain (local-part @ domain).
      */
     private String loginAllowedDomain = "talentserv.co.in";
@@ -393,6 +403,46 @@ public class BlinkProperties {
         this.smtpOutboxDir = smtpOutboxDir;
     }
 
+    public String getGmailClientId() {
+        return gmailClientId;
+    }
+
+    public void setGmailClientId(String gmailClientId) {
+        this.gmailClientId = gmailClientId;
+    }
+
+    public String getGmailClientSecret() {
+        return gmailClientSecret;
+    }
+
+    public void setGmailClientSecret(String gmailClientSecret) {
+        this.gmailClientSecret = gmailClientSecret;
+    }
+
+    public String getGmailRefreshToken() {
+        return gmailRefreshToken;
+    }
+
+    public void setGmailRefreshToken(String gmailRefreshToken) {
+        this.gmailRefreshToken = gmailRefreshToken;
+    }
+
+    public String getGmailFrom() {
+        return gmailFrom;
+    }
+
+    public void setGmailFrom(String gmailFrom) {
+        this.gmailFrom = gmailFrom;
+    }
+
+    public String getGmailRedirectUri() {
+        return gmailRedirectUri;
+    }
+
+    public void setGmailRedirectUri(String gmailRedirectUri) {
+        this.gmailRedirectUri = gmailRedirectUri;
+    }
+
     public String getLoginAllowedDomain() {
         return loginAllowedDomain;
     }
@@ -455,6 +505,14 @@ public class BlinkProperties {
 
     public boolean smtpConfigured() {
         return !blank(smtpHost);
+    }
+
+    public boolean gmailOAuthClientConfigured() {
+        return !blank(gmailClientId) && !blank(gmailClientSecret);
+    }
+
+    public boolean gmailConfigured() {
+        return gmailOAuthClientConfigured() && !blank(gmailRefreshToken);
     }
 
     public boolean s3Enabled() {
