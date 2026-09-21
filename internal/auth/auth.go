@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"math/big"
 	"net/mail"
 	"strings"
@@ -96,11 +97,22 @@ func (s *Service) RequestOTP(ctx context.Context, req OTPRequest) (*OTPRequestRe
 	mode := "smtp"
 	if s.cfg.LocalMail() {
 		mode = "local"
+	} else if s.cfg.GmailConfigured() {
+		mode = "gmail"
+		if s.mail == nil {
+			return nil, fmt.Errorf("%w: sign-in email is not configured", ErrBadRequest)
+		}
+		if err := s.mail.SendOTP(ctx, email, otp); err != nil {
+			_, _ = s.pool.Exec(ctx, `DELETE FROM blink_otp_challenge WHERE email=$1`, email)
+			log.Printf("OTP email failed for %s: %v", email, err)
+			return nil, fmt.Errorf("%w: could not send sign-in email", ErrBadRequest)
+		}
 	} else if strings.TrimSpace(s.cfg.SMTPHost) == "" {
 		return nil, fmt.Errorf("%w: sign-in email is not configured", ErrBadRequest)
 	} else if s.mail != nil {
 		if err := s.mail.SendOTP(ctx, email, otp); err != nil {
 			_, _ = s.pool.Exec(ctx, `DELETE FROM blink_otp_challenge WHERE email=$1`, email)
+			log.Printf("OTP email failed for %s: %v", email, err)
 			return nil, fmt.Errorf("%w: could not send sign-in email", ErrBadRequest)
 		}
 	}

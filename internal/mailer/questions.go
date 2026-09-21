@@ -29,9 +29,12 @@ type SendQuestionsResponse struct {
 }
 
 func (s *Service) SendQuestions(ctx context.Context, questions []QuestionItem) SendQuestionsResponse {
-	smtp := strings.TrimSpace(s.cfg.SMTPHost) != "" && !s.cfg.LocalMail()
+	gmail := s.cfg.GmailConfigured() && !s.cfg.LocalMail()
+	smtp := !gmail && strings.TrimSpace(s.cfg.SMTPHost) != "" && !s.cfg.LocalMail()
 	mode := "outbox"
-	if smtp {
+	if gmail {
+		mode = "gmail"
+	} else if smtp {
 		mode = "smtp"
 	}
 	grouped := groupByRecipient(questions)
@@ -42,6 +45,9 @@ func (s *Service) SendQuestions(ctx context.Context, questions []QuestionItem) S
 		body := buildBody(batch.items)
 		method := mode
 		message := "Sent via SMTP to " + email
+		if gmail {
+			message = "Sent via Gmail to " + email
+		}
 		if err := s.send(ctx, email, subject, body); err != nil {
 			for _, item := range batch.items {
 				results = append(results, DeliveryResult{
@@ -53,7 +59,7 @@ func (s *Service) SendQuestions(ctx context.Context, questions []QuestionItem) S
 			}
 			continue
 		}
-		if !smtp {
+		if !gmail && !smtp {
 			method = "outbox"
 			message = "Saved to outbox"
 		}
@@ -67,7 +73,7 @@ func (s *Service) SendQuestions(ctx context.Context, questions []QuestionItem) S
 		}
 	}
 	resp := SendQuestionsResponse{Results: results, DeliveryMode: mode}
-	if !smtp {
+	if !gmail && !smtp {
 		dir := s.cfg.SMTPOutboxDir
 		resp.OutboxDir = &dir
 	}

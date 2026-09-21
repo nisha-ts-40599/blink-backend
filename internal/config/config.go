@@ -54,6 +54,12 @@ type Config struct {
 	SMTPOutboxDir string
 	SMTPEnabled   bool
 
+	GmailClientID     string
+	GmailClientSecret string
+	GmailRefreshToken string
+	GmailFrom         string
+	GmailRedirectURI  string
+
 	LoginAllowedDomain string
 	OTPttl             time.Duration
 	OTPResendCooldown  time.Duration
@@ -118,6 +124,12 @@ func Load() (Config, error) {
 		SMTPOutboxDir: env("BLINK_SMTP_OUTBOX_DIR", ".blink-outbox"),
 		SMTPEnabled:   boolEnv("BLINK_SMTP_ENABLED", false),
 
+		GmailClientID:     os.Getenv("BLINK_GMAIL_CLIENT_ID"),
+		GmailClientSecret: os.Getenv("BLINK_GMAIL_CLIENT_SECRET"),
+		GmailRefreshToken: os.Getenv("BLINK_GMAIL_REFRESH_TOKEN"),
+		GmailFrom:         os.Getenv("BLINK_GMAIL_FROM"),
+		GmailRedirectURI:  os.Getenv("BLINK_GMAIL_REDIRECT_URI"),
+
 		LoginAllowedDomain: env("BLINK_LOGIN_ALLOWED_DOMAIN", "talentserv.co.in"),
 		OTPttl:             durationEnv("BLINK_OTP_TTL", 5*time.Minute),
 		OTPResendCooldown:  durationEnv("BLINK_OTP_RESEND_COOLDOWN", 45*time.Second),
@@ -149,10 +161,17 @@ type secretError string
 func (e secretError) Error() string { return string(e) }
 func errSecret(msg string) error    { return secretError(msg) }
 
+// GmailConfigured is true when the Gmail API mailbox can send OTPs over HTTPS.
+func (c Config) GmailConfigured() bool {
+	return strings.TrimSpace(c.GmailClientID) != "" &&
+		strings.TrimSpace(c.GmailClientSecret) != "" &&
+		strings.TrimSpace(c.GmailRefreshToken) != ""
+}
+
 // LocalMail shows the OTP on screen and skips SMTP while a login gate is set.
-// Set BLINK_SMTP_ENABLED=true later to send real email instead.
+// Gmail OAuth or BLINK_SMTP_ENABLED=true sends real email instead.
 func (c Config) LocalMail() bool {
-	if c.SMTPEnabled {
+	if c.SMTPEnabled || c.GmailConfigured() {
 		return false
 	}
 	return strings.TrimSpace(c.LoginGate) != ""

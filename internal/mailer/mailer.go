@@ -5,11 +5,13 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
+	"net/http"
 	"net/smtp"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nisha-ts-40599/blink-backend/internal/config"
@@ -18,10 +20,18 @@ import (
 const smtpTimeout = 10 * time.Second
 
 type Service struct {
-	cfg config.Config
+	cfg     config.Config
+	http    *http.Client
+	gmailMu sync.Mutex
+	gmailTok gmailToken
 }
 
-func New(cfg config.Config) *Service { return &Service{cfg: cfg} }
+func New(cfg config.Config) *Service {
+	return &Service{
+		cfg:  cfg,
+		http: &http.Client{Timeout: 15 * time.Second},
+	}
+}
 
 func (s *Service) SendOTP(ctx context.Context, to, otp string) error {
 	subject := "Blink sign-in code"
@@ -34,6 +44,9 @@ func (s *Service) SendStakeholder(ctx context.Context, to, subject, body string)
 }
 
 func (s *Service) send(ctx context.Context, to, subject, body string) error {
+	if s.cfg.GmailConfigured() && !s.cfg.LocalMail() {
+		return s.sendGmail(ctx, to, subject, body)
+	}
 	if strings.TrimSpace(s.cfg.SMTPHost) == "" || s.cfg.LocalMail() {
 		_ = os.MkdirAll(s.cfg.SMTPOutboxDir, 0o755)
 		name := fmt.Sprintf("%s_%s.txt", time.Now().UTC().Format("2006-01-02T15-04-05.000000Z"), sanitize(to))
