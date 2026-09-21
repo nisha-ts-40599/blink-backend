@@ -14,6 +14,7 @@ import java.util.Properties;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.mail.SimpleMailMessage;
 import org.springframework.mail.javamail.JavaMailSenderImpl;
 import org.springframework.stereotype.Service;
@@ -30,17 +31,25 @@ public class StakeholderEmailService {
     private static final Logger log = LoggerFactory.getLogger(StakeholderEmailService.class);
 
     private final BlinkProperties properties;
+    private final GmailOAuthMailer gmailMailer;
 
     public StakeholderEmailService(BlinkProperties properties) {
+        this(properties, null);
+    }
+
+    @Autowired
+    public StakeholderEmailService(BlinkProperties properties, GmailOAuthMailer gmailMailer) {
         this.properties = properties;
+        this.gmailMailer = gmailMailer;
     }
 
     public StakeholderQuestionsSendResponse send(StakeholderQuestionsSendRequest request) {
         List<StakeholderQuestionSendItem> questions =
                 request == null || request.questions() == null ? List.of() : request.questions();
         Map<String, List<StakeholderQuestionSendItem>> byRecipient = groupByRecipient(questions);
-        boolean smtp = properties.smtpConfigured();
-        String mode = smtp ? "smtp" : "outbox";
+        boolean gmail = gmailReady();
+        boolean smtp = !gmail && properties.smtpConfigured();
+        String mode = gmail ? "gmail" : smtp ? "smtp" : "outbox";
         Path outbox = resolveOutboxDir();
         List<StakeholderQuestionDeliveryResult> results = new ArrayList<>();
 
@@ -52,7 +61,11 @@ public class StakeholderEmailService {
                 String body = buildBody(batch);
                 String method;
                 String message;
-                if (smtp) {
+                if (gmail) {
+                    gmailMailer.send(email, subject, body);
+                    method = "gmail";
+                    message = "Sent via Gmail to " + email;
+                } else if (smtp) {
                     sendSmtp(email, subject, body);
                     method = "smtp";
                     message = "Sent via SMTP to " + email;
@@ -81,13 +94,17 @@ public class StakeholderEmailService {
         return new StakeholderQuestionsSendResponse(
                 results,
                 mode,
-                smtp ? null : outbox.toAbsolutePath().toString()
+                gmail || smtp ? null : outbox.toAbsolutePath().toString()
         );
     }
 
     public TextMailResult sendText(String to, String subject, String body) {
         if (to == null || to.isBlank()) {
             throw new IllegalArgumentException("Recipient is required.");
+        }
+        if (gmailReady()) {
+            gmailMailer.send(to, subject, body);
+            return new TextMailResult("gmail", null);
         }
         boolean smtp = properties.smtpConfigured();
         if (smtp) {
@@ -176,6 +193,10 @@ public class StakeholderEmailService {
         content.append("\n\n").append(body);
         Files.writeString(file, content.toString(), StandardCharsets.UTF_8);
         return file;
+    }
+
+    private boolean gmailReady() {
+        return gmailMailer != null && gmailMailer.configured();
     }
 
     private Path resolveOutboxDir() {

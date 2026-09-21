@@ -56,6 +56,16 @@ services:
         sync: false
       - key: BLINK_SMTP_ENABLED
         value: "false"
+      - key: BLINK_GMAIL_CLIENT_ID
+        sync: false
+      - key: BLINK_GMAIL_CLIENT_SECRET
+        sync: false
+      - key: BLINK_GMAIL_REFRESH_TOKEN
+        sync: false
+      - key: BLINK_GMAIL_FROM
+        sync: false
+      - key: BLINK_LOGIN_ALLOWED_DOMAIN
+        value: talentserv.co.in
       - key: BLINK_LOGIN_GATE
         sync: false
       - key: BLINK_JIRA_REDIRECT_URI

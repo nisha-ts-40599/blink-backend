@@ -113,18 +113,18 @@ public class OtpLoginService {
                     "Could not send the sign-in code. Try again in a moment."
             );
         }
-        if (!"smtp".equals(delivery.deliveryMode())) {
+        if ("outbox".equals(delivery.deliveryMode())) {
             challenges.remove(email);
-            log.warn("OTP email skipped for {}; SMTP is not configured", email);
+            log.warn("OTP email skipped for {}; Gmail OAuth / SMTP is not configured", email);
             throw new ApiException(
                     HttpStatus.SERVICE_UNAVAILABLE,
                     "Could not send the sign-in code. Try again in a moment."
             );
         }
-        log.info("Sent sign-in OTP to {} via smtp", email);
+        log.info("Sent sign-in OTP to {} via {}", email, delivery.deliveryMode());
         return new OtpRequestResponse(
                 "We sent a one-time password to " + email + ".",
-                "smtp",
+                delivery.deliveryMode(),
                 (int) ttl.toSeconds(),
                 (int) cooldown.toSeconds(),
                 null
@@ -250,7 +250,11 @@ public class OtpLoginService {
         if (domain == null || domain.isBlank()) {
             return "talentserv.co.in";
         }
-        return domain.trim().toLowerCase(Locale.ROOT);
+        String trimmed = domain.trim().toLowerCase(Locale.ROOT);
+        if (trimmed.startsWith("@")) {
+            trimmed = trimmed.substring(1);
+        }
+        return trimmed.isBlank() ? "talentserv.co.in" : trimmed;
     }
 
     private SessionRecord resolve(String authorizationHeader) {

@@ -141,16 +141,34 @@ Set `SPRING_JPA_DDL_AUTO=none` after the schema is stable if you do not want Hib
 
 ## Stakeholder emails and Jira comments
 
-**Email** — `POST /api/stakeholder-questions/send` groups questions by `recipient_email` and sends **one message per person**.
+**Gmail OAuth (recommended on Render)** — one mailbox sends login OTPs and stakeholder mail over HTTPS. Sign-in codes are sent only to `@talentserv.co.in`.
+
+1. In [Google Cloud Console](https://console.cloud.google.com/) create (or pick) a project, enable **Gmail API**, and configure the OAuth consent screen.
+2. Credentials → **OAuth client ID** → Web application. Add these authorized redirect URIs:
+   - `http://localhost:8090/api/auth/gmail/oauth/callback`
+   - `https://YOUR-BACKEND.onrender.com/api/auth/gmail/oauth/callback`
+3. Set `BLINK_GMAIL_CLIENT_ID` and `BLINK_GMAIL_CLIENT_SECRET` on the API (local `.env` and Render). Restart.
+4. While signed into the sending Gmail account, open `https://YOUR-BACKEND.onrender.com/api/auth/gmail/oauth/url` (or `http://localhost:8090/api/auth/gmail/oauth/url`).
+5. Copy `BLINK_GMAIL_FROM` and `BLINK_GMAIL_REFRESH_TOKEN` from the success page into Render env (and local `.env` if you test mail locally). Restart again.
+6. Set `BLINK_OTP_REVEAL=false` so production actually emails the code instead of showing it.
+
+Testing-mode Google apps issue refresh tokens that expire after 7 days. Publish the OAuth app (or keep the Gmail user as a test user and reconnect when Google expires the token).
+
+**Email** — `POST /api/stakeholder-questions/send` groups questions by `recipient_email` and sends **one message per person**. Gmail OAuth is used when configured; otherwise SMTP; otherwise outbox files.
 
 | Env | Purpose |
 | --- | --- |
-| `BLINK_SMTP_HOST` | When set, deliver via SMTP |
+| `BLINK_GMAIL_CLIENT_ID` / `BLINK_GMAIL_CLIENT_SECRET` | Google OAuth client for the sending mailbox |
+| `BLINK_GMAIL_REFRESH_TOKEN` | Long-lived token from the one-time consent |
+| `BLINK_GMAIL_FROM` | The Gmail address that consented |
+| `BLINK_GMAIL_REDIRECT_URI` | Optional override for the OAuth callback |
+| `BLINK_LOGIN_ALLOWED_DOMAIN` | OTP recipients must be `local@this-domain` (default `talentserv.co.in`) |
+| `BLINK_SMTP_HOST` | Fallback SMTP when Gmail OAuth is unset |
 | `BLINK_SMTP_PORT` | Default `587` |
-| `BLINK_SMTP_USERNAME` / `BLINK_SMTP_PASSWORD` | Optional auth |
-| `BLINK_SMTP_FROM` | From address |
+| `BLINK_SMTP_USERNAME` / `BLINK_SMTP_PASSWORD` | Optional SMTP auth |
+| `BLINK_SMTP_FROM` | SMTP From address |
 | `BLINK_SMTP_START_TLS` | Default `true` |
-| `BLINK_SMTP_OUTBOX_DIR` | When host is unset, write `.txt` files here (default `.blink-outbox`) |
+| `BLINK_SMTP_OUTBOX_DIR` | When neither Gmail nor SMTP is set, write `.txt` files here (default `.blink-outbox`) |
 
 **Jira** — after epics/stories exist, `POST /api/integrations/jira/comments` posts a clarification comment with `<!-- blink-question:{id} -->`. `POST /api/integrations/jira/comments/poll` returns the next reply after that marker that is not from Blink’s posting account. OAuth already requests `write:jira-work`.
 
@@ -165,6 +183,8 @@ Set `SPRING_JPA_DDL_AUTO=none` after the schema is stable if you do not want Hib
 | POST | `/api/projects/{id}/download` | Download workspace zip. Includes `.cursor/mcp.json` (portable `npx`), `.cursor/mcp.windows.json` (`npx.cmd`), `.cursor/mcp.unix.json`, `.cursor/MCP_SETUP.md`, and `automation_sdlc/.env.mcp.example`. Secrets use `${env:...}` only. Form field `mcpProvider` repeats connected ids (`github`, `jira`, `confluence`). |
 | POST | `/api/grooming/clarify` | Hosted `/clarify-requirement` discovery |
 | POST | `/api/projects/{id}/setup` | Hosted `/setup-new-workspace` apply |
+| GET | `/api/auth/gmail/oauth/url` | One-time Gmail mailbox consent (redirects to Google) |
+| GET | `/api/auth/gmail/oauth/callback` | Stores nothing; shows `BLINK_GMAIL_REFRESH_TOKEN` to copy into env |
 | GET | `/actuator/health` | Health |
 
 ## Table mapping

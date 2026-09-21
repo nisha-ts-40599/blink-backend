@@ -15,7 +15,8 @@ spring:
       - org.springframework.boot.data.jpa.autoconfigure.JpaRepositoriesAutoConfiguration
       - org.springframework.boot.sql.init.autoconfigure.SqlInitializationAutoConfiguration
 
-# Local nodb has no SMTP. Show the OTP in the UI instead of emailing.
+# Local nodb: OTP on screen + access code unless .env overrides (Gmail test:
+# BLINK_OTP_REVEAL=false and BLINK_LOGIN_GATE empty).
 blink:
-  otp-reveal: true
-  login-gate: talentserv-blink
+  otp-reveal: ${BLINK_OTP_REVEAL:true}
+  login-gate: ${BLINK_LOGIN_GATE:talentserv-blink}

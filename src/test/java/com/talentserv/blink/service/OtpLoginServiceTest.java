@@ -51,6 +51,10 @@ class OtpLoginServiceTest {
                 .hasMessageContaining("talentserv.co.in");
         assertThatThrownBy(() -> service.requestOtp("ada@mail.talentserv.co.in"))
                 .isInstanceOf(ApiException.class);
+        assertThatThrownBy(() -> service.requestOtp("ada@talentserv.co.in.example.com"))
+                .isInstanceOf(ApiException.class);
+        assertThat(mail.lastBody).isEmpty();
+        assertThat(mail.sentTo).isEmpty();
     }
 
     @Test
@@ -101,6 +105,28 @@ class OtpLoginServiceTest {
     }
 
     @Test
+    void sendsOtpWhenGmailOauthDelivers() {
+        mail.mode = "gmail";
+        OtpRequestResponse requested = service.requestOtp("ada@talentserv.co.in");
+        assertThat(requested.deliveryMode()).isEqualTo("gmail");
+        assertThat(requested.otp()).isNull();
+        assertThat(mail.sentTo).isEqualTo("ada@talentserv.co.in");
+        String otp = readOtp(mail.lastBody);
+        AuthSessionResponse session = service.verifyOtp("ada@talentserv.co.in", otp);
+        assertThat(session.email()).isEqualTo("ada@talentserv.co.in");
+    }
+
+    @Test
+    void stripsAtPrefixFromAllowedDomain() {
+        properties.setLoginAllowedDomain("@TalentServ.co.in");
+        OtpRequestResponse requested = service.requestOtp("ada@talentserv.co.in");
+        assertThat(requested.deliveryMode()).isEqualTo("smtp");
+        assertThatThrownBy(() -> service.requestOtp("ada@gmail.com"))
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("talentserv.co.in");
+    }
+
+    @Test
     void wrongOtpIsRejected() {
         service.requestOtp("ada@talentserv.co.in");
         assertThat(readOtp(mail.lastBody)).isNotEqualTo("000000");
@@ -127,6 +153,8 @@ class OtpLoginServiceTest {
 
     private static final class CapturingMail extends StakeholderEmailService {
         private String lastBody = "";
+        private String sentTo = "";
+        private String mode = "smtp";
 
         private CapturingMail(BlinkProperties properties) {
             super(properties);
@@ -134,8 +162,9 @@ class OtpLoginServiceTest {
 
         @Override
         public TextMailResult sendText(String to, String subject, String body) {
+            sentTo = to == null ? "" : to;
             lastBody = body == null ? "" : body;
-            return new TextMailResult("smtp", null);
+            return new TextMailResult(mode, null);
         }
     }
 
