@@ -29,6 +29,8 @@ import com.talentserv.blink.dto.JiraProjectDto;
 import com.talentserv.blink.dto.JiraProjectsRequest;
 import com.talentserv.blink.dto.JiraCreateIssuesRequest;
 import com.talentserv.blink.dto.JiraCreateIssuesResponse;
+import com.talentserv.blink.dto.JiraDeleteIssuesRequest;
+import com.talentserv.blink.dto.BlinkJiraIssueDeleteResponse;
 import com.talentserv.blink.dto.JiraCommentCreateRequest;
 import com.talentserv.blink.dto.JiraCommentCreateResponse;
 import com.talentserv.blink.dto.JiraCommentPollRequest;
@@ -123,6 +125,11 @@ public class IntegrationConnectController {
     @PostMapping("/jira/issues")
     public JiraCreateIssuesResponse createJiraIssues(@Valid @RequestBody JiraCreateIssuesRequest request) {
         return integrationConnectService.createJiraIssues(request);
+    }
+
+    @PostMapping("/jira/issues/delete")
+    public BlinkJiraIssueDeleteResponse deleteJiraIssues(@Valid @RequestBody JiraDeleteIssuesRequest request) {
+        return integrationConnectService.deleteJiraIssuesByKeys(request);
     }
 
     @PostMapping("/jira/comments")

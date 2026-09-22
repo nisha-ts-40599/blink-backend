@@ -62,7 +62,7 @@ public class BlinkProperties {
     private String jiraClientId = "";
     private String jiraClientSecret = "";
     private String jiraRedirectUri = "";
-    private String jiraScopes = "read:jira-work write:jira-work delete:jira-work read:jira-user read:me offline_access";
+    private String jiraScopes = "read:jira-work write:jira-work read:jira-user read:me offline_access";
     /**
      * GitHub OAuth App credentials. Users sign in on Blink; PAT goes in the zip .env later.
      */
