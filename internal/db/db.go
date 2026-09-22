@@ -28,6 +28,8 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 		{"migrations/002_auth_sessions.sql", "./migrations/002_auth_sessions.sql"},
 		{"migrations/003_user_integrations.sql", "./migrations/003_user_integrations.sql"},
 		{"migrations/004_chat.sql", "./migrations/004_chat.sql"},
+		{"migrations/005_sdlc_workflow.sql", "./migrations/005_sdlc_workflow.sql"},
+		{"migrations/006_work_tier.sql", "./migrations/006_work_tier.sql"},
 	}
 	for _, candidates := range files {
 		body, path, err := readFirst(candidates)

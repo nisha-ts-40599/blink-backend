@@ -101,3 +101,35 @@ func TestCommitFilesEmptyRepoErrorMessageIs409(t *testing.T) {
 		t.Fatal("404 missing ref is still a missing-branch bootstrap")
 	}
 }
+
+func TestParsePullURL(t *testing.T) {
+	owner, repo, n, err := ParsePullURL("https://github.com/acme/app/pull/12")
+	if err != nil || owner != "acme" || repo != "app" || n != 12 {
+		t.Fatalf("got %s %s %d %v", owner, repo, n, err)
+	}
+}
+
+func TestPullSnapshot(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/pulls/12", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"html_url":         "https://github.com/acme/app/pull/12",
+			"number":           12,
+			"draft":            true,
+			"state":            "open",
+			"mergeable_state":  "clean",
+			"head":             map[string]any{"sha": "deadbeef"},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	c := New("token")
+	c.baseURL = srv.URL
+	snap, err := c.PullSnapshot(context.Background(), "acme", "app", 12)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snap.Draft || snap.HeadSHA != "deadbeef" || snap.Number != 12 {
+		t.Fatalf("%+v", snap)
+	}
+}

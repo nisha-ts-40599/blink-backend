@@ -23,6 +23,7 @@ import (
 	"github.com/nisha-ts-40599/blink-backend/internal/project"
 	"github.com/nisha-ts-40599/blink-backend/internal/roles"
 	"github.com/nisha-ts-40599/blink-backend/internal/s3ws"
+	"github.com/nisha-ts-40599/blink-backend/internal/workflow"
 )
 
 type Server struct {
@@ -34,10 +35,11 @@ type Server struct {
 	integ *integrations.Service
 	s3    *s3ws.Service
 	chat  *chat.Store
+	wf    workflow.Service
 }
 
-func New(cfg config.Config, authSvc *auth.Service, proj *project.Service, agentClient *agent.Client, mail *mailer.Service, integ *integrations.Service, s3 *s3ws.Service, chatStore *chat.Store) http.Handler {
-	s := &Server{cfg: cfg, auth: authSvc, proj: proj, agent: agentClient, mail: mail, integ: integ, s3: s3, chat: chatStore}
+func New(cfg config.Config, authSvc *auth.Service, proj *project.Service, agentClient *agent.Client, mail *mailer.Service, integ *integrations.Service, s3 *s3ws.Service, chatStore *chat.Store, wf workflow.Service) http.Handler {
+	s := &Server{cfg: cfg, auth: authSvc, proj: proj, agent: agentClient, mail: mail, integ: integ, s3: s3, chat: chatStore, wf: wf}
 	r := chi.NewRouter()
 	r.Use(chimw.RequestID, chimw.RealIP, chimw.Logger, chimw.Recoverer)
 	r.Use(cors.Handler(cors.Options{
@@ -138,8 +140,16 @@ func New(cfg config.Config, authSvc *auth.Service, proj *project.Service, agentC
 				prr.Get("/{id}/chat", s.getProjectChat)
 				prr.Post("/{id}/chat/messages", s.postProjectChatMessage)
 				prr.Delete("/{id}/chat/messages", s.clearProjectChat)
+				prr.Post("/{id}/runs", s.startProjectRun)
+				prr.Get("/{id}/runs", s.listProjectRuns)
+				prr.Get("/{id}/runs/{runId}", s.getProjectRun)
 				prr.Get("/{id}", s.getProject)
 			})
+
+			pr.Get("/tasks", s.listMyTasks)
+			pr.Post("/tasks/{taskId}/answer", s.answerTask)
+			pr.Get("/runners", s.listMyRunners)
+			pr.Post("/runners", s.registerRunner)
 
 			pr.Route("/integrations", func(ir chi.Router) {
 				ir.Get("/", s.integ.ListMine)
@@ -173,6 +183,16 @@ func New(cfg config.Config, authSvc *auth.Service, proj *project.Service, agentC
 				dr.Delete("/", s.integ.DeleteAllBlinkIssues)
 				dr.Delete("/{issueKey}", s.integ.DeleteBlinkIssue)
 			})
+		})
+
+		api.Route("/runner", func(rr chi.Router) {
+			rr.Use(s.requireRunner)
+			rr.Post("/heartbeat", s.runnerHeartbeat)
+			rr.Post("/jobs/claim", s.runnerClaim)
+			rr.Post("/jobs/{jobId}/heartbeat", s.runnerJobHeartbeat)
+			rr.Post("/jobs/{jobId}/events", s.runnerJobEvent)
+			rr.Post("/jobs/{jobId}/complete", s.runnerJobComplete)
+			rr.Post("/jobs/{jobId}/fail", s.runnerJobFail)
 		})
 	})
 

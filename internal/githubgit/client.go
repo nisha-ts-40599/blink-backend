@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -413,6 +414,66 @@ func (c *Client) CombinedStatus(ctx context.Context, owner, repo, ref string) (s
 	_ = json.Unmarshal(raw, &m)
 	state, _ := m["state"].(string)
 	return state, string(raw), nil
+}
+
+type PullSnapshot struct {
+	URL            string
+	Number         int
+	Draft          bool
+	State          string
+	HeadSHA        string
+	MergeableState string
+}
+
+func ParsePullURL(prURL string) (owner, repo string, number int, err error) {
+	raw := strings.TrimSpace(prURL)
+	if raw == "" {
+		return "", "", 0, fmt.Errorf("empty pull request URL")
+	}
+	u, perr := url.Parse(raw)
+	if perr != nil {
+		return "", "", 0, perr
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(parts) < 4 || (parts[2] != "pull" && parts[2] != "pulls") {
+		return "", "", 0, fmt.Errorf("cannot parse pull request URL %s", raw)
+	}
+	n, nerr := strconv.Atoi(parts[3])
+	if nerr != nil {
+		return "", "", 0, fmt.Errorf("cannot parse pull number from %s", raw)
+	}
+	return parts[0], strings.TrimSuffix(parts[1], ".git"), n, nil
+}
+
+func (c *Client) PullSnapshot(ctx context.Context, owner, repo string, number int) (*PullSnapshot, error) {
+	status, raw, err := c.do(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, number), nil)
+	if err != nil {
+		return nil, err
+	}
+	if status >= 400 {
+		return nil, fmt.Errorf("GitHub pull %s/%s#%d: HTTP %d", owner, repo, number, status)
+	}
+	var body struct {
+		HTMLURL        string `json:"html_url"`
+		Number         int    `json:"number"`
+		Draft          bool   `json:"draft"`
+		State          string `json:"state"`
+		MergeableState string `json:"mergeable_state"`
+		Head           struct {
+			SHA string `json:"sha"`
+		} `json:"head"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return nil, err
+	}
+	return &PullSnapshot{
+		URL:            body.HTMLURL,
+		Number:         body.Number,
+		Draft:          body.Draft,
+		State:          body.State,
+		HeadSHA:        body.Head.SHA,
+		MergeableState: body.MergeableState,
+	}, nil
 }
 
 func truncate(s string, n int) string {

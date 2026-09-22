@@ -21,6 +21,7 @@ import (
 	"github.com/nisha-ts-40599/blink-backend/internal/mailer"
 	"github.com/nisha-ts-40599/blink-backend/internal/project"
 	"github.com/nisha-ts-40599/blink-backend/internal/s3ws"
+	"github.com/nisha-ts-40599/blink-backend/internal/workflow"
 	"github.com/nisha-ts-40599/blink-backend/internal/zipkit"
 )
 
@@ -64,7 +65,8 @@ func main() {
 		s3svc = s3ws.New(cfg)
 	}
 	chatStore := chat.New(pool)
-	handler := httpapi.New(cfg, authSvc, proj, agentClient, mail, integ, s3svc, chatStore)
+	wf := workflow.NewPostgres(pool)
+	handler := httpapi.New(cfg, authSvc, proj, agentClient, mail, integ, s3svc, chatStore, wf)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
