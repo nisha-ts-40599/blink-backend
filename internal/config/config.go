@@ -84,7 +84,7 @@ func Load() (Config, error) {
 	c := Config{
 		Port:               env("PORT", "8090"),
 		DatabaseURL:        firstNonEmpty(os.Getenv("DATABASE_URL"), os.Getenv("SPRING_DATASOURCE_URL"), "postgres://blink:blink@localhost:5432/blink?sslmode=disable"),
-		CORSOrigins:        splitCSV(env("BLINK_CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")),
+		CORSOrigins: splitCSV(env("BLINK_CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173,http://tauri.localhost,https://tauri.localhost,tauri://localhost")),
 		AgentRuntimeURL:    env("BLINK_AGENT_RUNTIME_URL", "https://z5i3yybrx1.execute-api.us-west-2.amazonaws.com"),
 		AgentRuntimeToken:  os.Getenv("BLINK_AGENT_RUNTIME_TOKEN"),
 		AgentLambdaName:    env("BLINK_AGENT_RUNTIME_LAMBDA_FUNCTION", "blink-agent-runtime"),
