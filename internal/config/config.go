@@ -101,7 +101,7 @@ func Load() (Config, error) {
 		JiraClientID:     os.Getenv("BLINK_JIRA_CLIENT_ID"),
 		JiraClientSecret: os.Getenv("BLINK_JIRA_CLIENT_SECRET"),
 		JiraRedirectURI:  os.Getenv("BLINK_JIRA_REDIRECT_URI"),
-		JiraScopes:       env("BLINK_JIRA_SCOPES", "read:jira-work write:jira-work delete:jira-work read:jira-user read:me offline_access"),
+		JiraScopes:       env("BLINK_JIRA_SCOPES", "read:jira-work write:jira-work read:jira-user read:me offline_access"),
 
 		GitHubClientID:     os.Getenv("BLINK_GITHUB_CLIENT_ID"),
 		GitHubClientSecret: os.Getenv("BLINK_GITHUB_CLIENT_SECRET"),

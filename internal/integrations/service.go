@@ -222,7 +222,7 @@ func (s *Service) JiraOAuthURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	redirect := s.resolveRedirect("jira", r.URL.Query().Get("redirectUri"), publicAPIBase(r))
-	scopes := firstNonEmpty(s.cfg.JiraScopes, "read:jira-work write:jira-work delete:jira-work read:jira-user read:me offline_access")
+	scopes := firstNonEmpty(s.cfg.JiraScopes, "read:jira-work write:jira-work read:jira-user read:me offline_access")
 	u := "https://auth.atlassian.com/authorize" +
 		"?audience=api.atlassian.com" +
 		"&client_id=" + url.QueryEscape(clientID) +
@@ -793,6 +793,103 @@ func (s *Service) CreateJiraIssues(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Service) DeleteJiraIssues(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ProjectID any      `json:"projectId"`
+		IssueKeys []string `json:"issueKeys"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	keys := make([]string, 0, len(req.IssueKeys))
+	seenIn := map[string]struct{}{}
+	for _, raw := range req.IssueKeys {
+		key := strings.TrimSpace(raw)
+		if key == "" {
+			continue
+		}
+		if _, dup := seenIn[key]; dup {
+			continue
+		}
+		seenIn[key] = struct{}{}
+		keys = append(keys, key)
+	}
+	if len(keys) == 0 {
+		writeErr(w, http.StatusBadRequest, "Add at least one Jira issue key to delete.")
+		return
+	}
+	projectID := parseID(req.ProjectID)
+	ctxJ, err := s.resolveJiraOwned(r.Context(), projectID, map[string]any{}, ownerFromAuth(r))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	deleted, errs := []string{}, []string{}
+	done := map[string]bool{}
+	pending := append([]string{}, keys...)
+	for pass := 0; pass < 4 && len(pending) > 0; pass++ {
+		next := []string{}
+		progress := false
+		for _, key := range pending {
+			if done[key] {
+				continue
+			}
+			err := s.deleteJiraIssueOpts(r.Context(), ctxJ, key, false)
+			if err == nil {
+				done[key] = true
+				deleted = append(deleted, key)
+				progress = true
+				continue
+			}
+			low := strings.ToLower(err.Error())
+			if strings.Contains(low, "404") || strings.Contains(low, "does not exist") || strings.Contains(low, "not found") {
+				done[key] = true
+				deleted = append(deleted, key)
+				progress = true
+				continue
+			}
+			if jiraDeleteBlockedByOtherIssues(err) && pass < 3 {
+				next = append(next, key)
+				continue
+			}
+			done[key] = true
+			if jiraDeleteBlockedByOtherIssues(err) {
+				errs = append(errs, key+": left in Jira because it still has other issues not created on this screen.")
+				continue
+			}
+			errs = append(errs, key+": "+err.Error())
+		}
+		if !progress && len(next) > 0 {
+			for _, key := range next {
+				if done[key] {
+					continue
+				}
+				done[key] = true
+				errs = append(errs, key+": left in Jira because it still has other issues not created on this screen.")
+			}
+			break
+		}
+		pending = next
+	}
+	status := http.StatusOK
+	msg := ""
+	if len(deleted) == 0 && len(errs) > 0 {
+		status = http.StatusBadGateway
+		msg = strings.Join(errs, " ")
+	}
+	writeJSON(w, status, map[string]any{
+		"deleted":      len(deleted),
+		"skipped":      0,
+		"deletedKeys":  deleted,
+		"skippedKeys":  []string{},
+		"errors":       errs,
+		"deletedCount": len(deleted),
+		"skippedCount": 0,
+		"message":      msg,
+	})
 }
 
 func (s *Service) CreateJiraComment(w http.ResponseWriter, r *http.Request) {
@@ -1716,15 +1813,7 @@ func toBlinkMarked(jctx jiraCtx, projectKey string, issue map[string]any) map[st
 	return nil
 }
 
-func (s *Service) listChildren(ctx context.Context, jctx jiraCtx, epicKey string) []map[string]any {
-	jql := `"Epic Link" = ` + epicKey + ` OR parent = ` + epicKey
-	payload, _ := json.Marshal(map[string]any{
-		"jql": jql, "maxResults": 100, "fields": []string{"summary", "description", "issuetype", "project"},
-	})
-	status, body, err := s.do(ctx, http.MethodPost, jctx.APIBase+"/rest/api/3/search/jql", withJSON(jctx.Headers), payload)
-	if err != nil || status < 200 || status >= 300 {
-		return nil
-	}
+func issuesFromSearchBody(body string) []map[string]any {
 	var root map[string]any
 	_ = json.Unmarshal([]byte(body), &root)
 	raw, _ := root["issues"].([]any)
@@ -1732,6 +1821,53 @@ func (s *Service) listChildren(ctx context.Context, jctx jiraCtx, epicKey string
 	for _, r := range raw {
 		if m, ok := r.(map[string]any); ok {
 			out = append(out, m)
+		}
+	}
+	return out
+}
+
+func (s *Service) listChildren(ctx context.Context, jctx jiraCtx, epicKey string) []map[string]any {
+	seen := map[string]struct{}{}
+	out := []map[string]any{}
+	add := func(issues []map[string]any) {
+		for _, m := range issues {
+			if m == nil {
+				continue
+			}
+			key := str(m["key"])
+			if key == "" || strings.EqualFold(key, epicKey) {
+				continue
+			}
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, m)
+		}
+	}
+	jql := `parent = ` + epicKey + ` OR "Epic Link" = ` + epicKey
+	payload, _ := json.Marshal(map[string]any{
+		"jql": jql, "maxResults": 100, "fields": []string{"summary", "description", "issuetype", "project"},
+	})
+	if status, body, err := s.do(ctx, http.MethodPost, jctx.APIBase+"/rest/api/3/search/jql", withJSON(jctx.Headers), payload); err == nil && status >= 200 && status < 300 {
+		add(issuesFromSearchBody(body))
+	}
+	if status, body, err := s.do(ctx, http.MethodGet, jctx.APIBase+"/rest/agile/1.0/epic/"+url.PathEscape(epicKey)+"/issue?maxResults=100", withJSON(jctx.Headers), nil); err == nil && status >= 200 && status < 300 {
+		add(issuesFromSearchBody(body))
+	}
+	if status, body, err := s.do(ctx, http.MethodGet, jctx.APIBase+"/rest/api/3/issue/"+url.PathEscape(epicKey)+"?fields=subtasks", withJSON(jctx.Headers), nil); err == nil && status >= 200 && status < 300 {
+		var issue map[string]any
+		_ = json.Unmarshal([]byte(body), &issue)
+		fields, _ := issue["fields"].(map[string]any)
+		if fields != nil {
+			raw, _ := fields["subtasks"].([]any)
+			subs := make([]map[string]any, 0, len(raw))
+			for _, r := range raw {
+				if m, ok := r.(map[string]any); ok {
+					subs = append(subs, m)
+				}
+			}
+			add(subs)
 		}
 	}
 	return out
@@ -1754,18 +1890,92 @@ func (s *Service) unmarkedChildren(ctx context.Context, jctx jiraCtx, epicKey st
 }
 
 func (s *Service) deleteJiraIssue(ctx context.Context, jctx jiraCtx, issueKey string) error {
-	status, body, err := s.do(ctx, http.MethodDelete,
-		jctx.APIBase+"/rest/api/3/issue/"+url.PathEscape(issueKey), jctx.Headers, nil)
+	return s.deleteJiraIssueOpts(ctx, jctx, issueKey, true)
+}
+
+func (s *Service) deleteJiraIssueOpts(ctx context.Context, jctx jiraCtx, issueKey string, deleteSubtasks bool) error {
+	headers := map[string]string{}
+	for k, v := range jctx.Headers {
+		if strings.EqualFold(k, "Content-Type") {
+			continue
+		}
+		headers[k] = v
+	}
+	headers["Accept"] = "application/json"
+	target := jctx.APIBase + "/rest/api/3/issue/" + url.PathEscape(issueKey)
+	if deleteSubtasks {
+		target += "?deleteSubtasks=true"
+	}
+	status, body, err := s.do(ctx, http.MethodDelete, target, headers, nil)
 	if err != nil {
 		return err
 	}
-	if status == 204 || (status >= 200 && status < 300) {
+	if status == 204 || status == 404 || (status >= 200 && status < 300) {
 		return nil
 	}
-	if status == 403 {
-		return fmt.Errorf("Jira refused to delete %s", issueKey)
+	detail := jiraAPIError(body, status)
+	if status == 401 {
+		return fmt.Errorf("Jira OAuth session cannot delete %s. Reconnect Atlassian on Integrations, then try again", issueKey)
 	}
-	return fmt.Errorf("%s", firstNonEmpty(jsonText(body, "message"), fmt.Sprintf("Jira returned HTTP %d.", status)))
+	if status == 403 || jiraDeletePermissionDenied(detail) {
+		if have, ok := s.jiraHasPermission(ctx, jctx, "DELETE_ISSUES", issueKey); ok && !have {
+			return fmt.Errorf("%s: your Atlassian account cannot delete issues in this Jira project. Ask a Jira admin to grant the Delete Issues permission, then try again", issueKey)
+		}
+		if jiraDeletePermissionDenied(detail) {
+			return fmt.Errorf("%s: your Atlassian account cannot delete issues in this Jira project. Ask a Jira admin to grant the Delete Issues permission, then try again", issueKey)
+		}
+		return fmt.Errorf("%s: %s", issueKey, detail)
+	}
+	return fmt.Errorf("%s", detail)
+}
+
+func jiraDeletePermissionDenied(detail string) bool {
+	low := strings.ToLower(detail)
+	return strings.Contains(low, "do not have permission to delete") ||
+		(strings.Contains(low, "you do not have permission") && strings.Contains(low, "delete")) ||
+		strings.Contains(low, "delete issues")
+}
+
+func (s *Service) jiraHasPermission(ctx context.Context, jctx jiraCtx, permission, issueKey string) (have bool, ok bool) {
+	q := "/rest/api/3/mypermissions?permissions=" + url.QueryEscape(permission)
+	if strings.TrimSpace(issueKey) != "" {
+		q += "&issueKey=" + url.QueryEscape(issueKey)
+	}
+	status, body, err := s.do(ctx, http.MethodGet, jctx.APIBase+q, jctx.Headers, nil)
+	if err != nil || status < 200 || status >= 300 {
+		return false, false
+	}
+	var root map[string]any
+	if json.Unmarshal([]byte(body), &root) != nil {
+		return false, false
+	}
+	perms, _ := root["permissions"].(map[string]any)
+	if perms == nil {
+		return false, false
+	}
+	entry, _ := perms[permission].(map[string]any)
+	if entry == nil {
+		return false, false
+	}
+	switch v := entry["havePermission"].(type) {
+	case bool:
+		return v, true
+	default:
+		return false, false
+	}
+}
+
+func jiraDeleteBlockedByOtherIssues(err error) bool {
+	if err == nil {
+		return false
+	}
+	low := strings.ToLower(err.Error())
+	return strings.Contains(low, "has issues associated") ||
+		strings.Contains(low, "has sub-task") ||
+		strings.Contains(low, "has subtask") ||
+		strings.Contains(low, "you cannot delete") ||
+		strings.Contains(low, "cannot be deleted") ||
+		(strings.Contains(low, "must delete") && strings.Contains(low, "child"))
 }
 
 func buildStoryDescription(story map[string]any) string {

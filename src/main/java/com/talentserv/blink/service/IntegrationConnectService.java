@@ -6,11 +6,14 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.time.Instant;
 import java.util.regex.Matcher;
@@ -41,6 +44,7 @@ import com.talentserv.blink.dto.StoredIntegration;
 import com.talentserv.blink.dto.JiraCreateIssuesRequest;
 import com.talentserv.blink.dto.JiraCreateIssuesResponse;
 import com.talentserv.blink.dto.JiraCreatedIssue;
+import com.talentserv.blink.dto.JiraDeleteIssuesRequest;
 import com.talentserv.blink.dto.JiraCommentCreateRequest;
 import com.talentserv.blink.dto.JiraCommentCreateResponse;
 import com.talentserv.blink.dto.JiraCommentPollRequest;
@@ -342,7 +346,7 @@ public class IntegrationConnectService {
         String redirectUri = resolveJiraRedirectUri(requestedRedirectUri, publicApiBase);
         String scopes = firstNonBlank(
                 properties.getJiraScopes(),
-                "read:jira-work write:jira-work delete:jira-work read:jira-user read:me offline_access"
+                "read:jira-work write:jira-work read:jira-user read:me offline_access"
         );
         String state = UUID.randomUUID().toString();
         String url = "https://auth.atlassian.com/authorize"
@@ -839,6 +843,95 @@ public class IntegrationConnectService {
         );
     }
 
+    public BlinkJiraIssueDeleteResponse deleteJiraIssuesByKeys(JiraDeleteIssuesRequest request) {
+        if (request == null || request.issueKeys() == null || request.issueKeys().isEmpty()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Add at least one Jira issue key to delete.");
+        }
+        Long projectId = requireBlinkProjectId(request.projectId());
+        StoredIntegration stored = requireStoredJira(projectId);
+        JiraCallContext ctx = resolveStoredJira(stored);
+
+        LinkedHashSet<String> requested = new LinkedHashSet<>();
+        for (String raw : request.issueKeys()) {
+            if (raw != null && !raw.isBlank()) {
+                requested.add(raw.trim());
+            }
+        }
+        if (requested.isEmpty()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Add at least one Jira issue key to delete.");
+        }
+
+        List<String> deleted = new ArrayList<>();
+        List<String> errors = new ArrayList<>();
+        Set<String> done = new HashSet<>();
+        List<String> pending = new ArrayList<>(requested);
+        for (int pass = 0; pass < 4 && !pending.isEmpty(); pass++) {
+            List<String> next = new ArrayList<>();
+            boolean progress = false;
+            for (String key : pending) {
+                if (!done.add(key)) {
+                    continue;
+                }
+                try {
+                    deleteJiraIssue(ctx, key, false);
+                    deleted.add(key);
+                    progress = true;
+                } catch (ApiException ex) {
+                    String message = ex.getMessage() == null ? "" : ex.getMessage().toLowerCase(Locale.ROOT);
+                    if (ex.getStatus() == HttpStatus.NOT_FOUND || message.contains("404") || message.contains("does not exist")) {
+                        deleted.add(key);
+                        progress = true;
+                        continue;
+                    }
+                    if (jiraDeleteBlockedByOtherIssues(ex) && pass < 3) {
+                        done.remove(key);
+                        next.add(key);
+                        continue;
+                    }
+                    if (jiraDeleteBlockedByOtherIssues(ex)) {
+                        errors.add(key + ": left in Jira because it still has other issues not created on this screen.");
+                        continue;
+                    }
+                    errors.add(key + ": " + ex.getMessage());
+                }
+            }
+            if (!progress && !next.isEmpty()) {
+                for (String key : next) {
+                    errors.add(key + ": left in Jira because it still has other issues not created on this screen.");
+                }
+                break;
+            }
+            pending = next;
+        }
+        if (deleted.isEmpty() && !errors.isEmpty()) {
+            throw new ApiException(HttpStatus.BAD_GATEWAY, String.join(" ", errors));
+        }
+        log.info(
+                "Deleted Jira issues by key projectId={} deleted={} errors={}",
+                projectId, deleted.size(), errors.size()
+        );
+        return new BlinkJiraIssueDeleteResponse(
+                deleted.size(),
+                0,
+                List.copyOf(deleted),
+                List.of(),
+                List.copyOf(errors)
+        );
+    }
+
+    private static boolean jiraDeleteBlockedByOtherIssues(ApiException ex) {
+        if (ex == null) {
+            return false;
+        }
+        String message = ex.getMessage() == null ? "" : ex.getMessage().toLowerCase(Locale.ROOT);
+        return message.contains("has issues associated")
+                || message.contains("has sub-task")
+                || message.contains("has subtask")
+                || message.contains("you cannot delete")
+                || message.contains("cannot be deleted")
+                || (message.contains("must delete") && message.contains("child"));
+    }
+
     /** Package-visible for tests — Blink epic marker line. */
     static String blinkSourceEpicId(String plainDescription) {
         if (plainDescription == null || plainDescription.isBlank()) {
@@ -1033,17 +1126,66 @@ public class IntegrationConnectService {
     }
 
     private void deleteJiraIssue(JiraCallContext ctx, String issueKey) {
+        deleteJiraIssue(ctx, issueKey, true);
+    }
+
+    private void deleteJiraIssue(JiraCallContext ctx, String issueKey, boolean deleteSubtasks) {
         String url = ctx.apiBase() + "/rest/api/3/issue/" + encode(issueKey);
+        if (deleteSubtasks) {
+            url += "?deleteSubtasks=true";
+        }
         IntegrationHttpGateway.IntegrationHttpResponse res = http.delete(url, ctx.headers());
-        if (res.status() == 204 || res.status() == 200) {
+        if (res.status() == 204 || res.status() == 200 || res.status() == 404) {
             return;
         }
-        if (res.status() == 403) {
-            throw new ApiException(HttpStatus.FORBIDDEN,
-                    "Jira refused to delete " + issueKey
-                            + ". Reconnect Jira OAuth so Blink has delete:jira-work, or use an account that can delete issues.");
+        String detail = jiraErrorMessage(res.body(), res.status());
+        if (res.status() == 401) {
+            throw new ApiException(HttpStatus.UNAUTHORIZED,
+                    "Jira OAuth session cannot delete " + issueKey + ". Reconnect Atlassian on Integrations, then try again.");
         }
-        throw new ApiException(HttpStatus.BAD_GATEWAY, jiraErrorMessage(res.body(), res.status()));
+        if (res.status() == 403 || jiraDeletePermissionDenied(detail)) {
+            if (Boolean.FALSE.equals(jiraHasPermission(ctx, "DELETE_ISSUES", issueKey))) {
+                throw new ApiException(HttpStatus.FORBIDDEN,
+                        issueKey + ": your Atlassian account cannot delete issues in this Jira project. Ask a Jira admin to grant the Delete Issues permission, then try again.");
+            }
+            if (jiraDeletePermissionDenied(detail)) {
+                throw new ApiException(HttpStatus.FORBIDDEN,
+                        issueKey + ": your Atlassian account cannot delete issues in this Jira project. Ask a Jira admin to grant the Delete Issues permission, then try again.");
+            }
+            throw new ApiException(HttpStatus.FORBIDDEN, issueKey + ": " + detail);
+        }
+        throw new ApiException(HttpStatus.BAD_GATEWAY, detail);
+    }
+
+    private static boolean jiraDeletePermissionDenied(String detail) {
+        if (detail == null) {
+            return false;
+        }
+        String message = detail.toLowerCase(Locale.ROOT);
+        return message.contains("do not have permission to delete")
+                || (message.contains("you do not have permission") && message.contains("delete"))
+                || message.contains("delete issues");
+    }
+
+    private Boolean jiraHasPermission(JiraCallContext ctx, String permission, String issueKey) {
+        String url = ctx.apiBase() + "/rest/api/3/mypermissions?permissions=" + encode(permission);
+        if (issueKey != null && !issueKey.isBlank()) {
+            url += "&issueKey=" + encode(issueKey);
+        }
+        IntegrationHttpGateway.IntegrationHttpResponse res = http.get(url, ctx.headers());
+        if (res.status() < 200 || res.status() >= 300) {
+            return null;
+        }
+        try {
+            JsonNode have = MAPPER.readTree(res.body() == null ? "{}" : res.body())
+                    .path("permissions").path(permission).path("havePermission");
+            if (have.isMissingNode() || !have.isBoolean()) {
+                return null;
+            }
+            return have.asBoolean();
+        } catch (Exception ex) {
+            return null;
+        }
     }
 
     public JiraCommentCreateResponse createJiraComment(JiraCommentCreateRequest request) {

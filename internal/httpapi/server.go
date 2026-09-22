@@ -156,6 +156,7 @@ func New(cfg config.Config, authSvc *auth.Service, proj *project.Service, agentC
 				ir.Post("/figma/teams", s.integ.FigmaTeams)
 				ir.Post("/figma/projects", s.integ.FigmaProjects)
 				ir.Post("/jira/issues", s.integ.CreateJiraIssues)
+				ir.Post("/jira/issues/delete", s.integ.DeleteJiraIssues)
 				ir.Post("/jira/comments", s.integ.CreateJiraComment)
 				ir.Post("/jira/comments/poll", s.integ.PollJiraComments)
 				ir.Post("/jira/comments/reset-simulated", s.integ.ResetSimulatedJiraReplies)
