@@ -30,3 +30,12 @@ CREATE INDEX IF NOT EXISTS idx_figma_design_file_key
 
 CREATE INDEX IF NOT EXISTS idx_figma_design_passcode
     ON figma_design_binding (webhook_passcode);
+
+ALTER TABLE figma_design_binding ADD COLUMN IF NOT EXISTS webhook_passcode VARCHAR(120);
+ALTER TABLE figma_design_binding ADD COLUMN IF NOT EXISTS webhook_status VARCHAR(120);
+ALTER TABLE figma_design_binding ADD COLUMN IF NOT EXISTS snapshot_json TEXT;
+ALTER TABLE figma_design_binding ALTER COLUMN file_name TYPE TEXT;
+ALTER TABLE figma_design_binding ALTER COLUMN file_url TYPE TEXT;
+ALTER TABLE figma_design_binding ALTER COLUMN file_version TYPE TEXT;
+ALTER TABLE figma_design_binding ALTER COLUMN webhook_status TYPE TEXT;
+ALTER TABLE figma_design_binding ALTER COLUMN last_synced_at TYPE TEXT;
