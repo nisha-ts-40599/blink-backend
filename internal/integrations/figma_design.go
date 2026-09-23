@@ -215,6 +215,7 @@ func (s *Service) ingestLoaded(w http.ResponseWriter, r *http.Request, projectID
 	if len(changes) == 0 && versionChanged {
 		changes = markLinkedScreens(screens, "changed in Figma")
 	}
+	screens = s.fillFigmaThumbnails(r, token, fileKey, screens, versionChanged || len(changes) > 0)
 	row := existing
 	row.ProjectID = projectID
 	row.FileKey = fileKey
@@ -233,7 +234,7 @@ func (s *Service) ingestLoaded(w http.ResponseWriter, r *http.Request, projectID
 		changes = nil
 	} else if row.SyncJira && len(changes) > 0 {
 		updates = s.postFigmaComments(r, projectID, row, changes)
-		row.LastSyncSummary = fmt.Sprintf("%d screen change%s detected.", len(changes), plural(len(changes)))
+		row.LastSyncSummary = figmaSyncSummary(changes, updates)
 	} else {
 		row.LastSyncSummary = fmt.Sprintf("Design snapshot stored. %d screen%s.", len(screens), plural(len(screens)))
 	}
@@ -281,7 +282,7 @@ func (s *Service) FigmaWebhook(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) readFigmaFile(r *http.Request, token, fileKey string) (string, string, []figmaScreen, error) {
-	rawURL := "https://api.figma.com/v1/files/" + fileKey + "?depth=2"
+	rawURL := "https://api.figma.com/v1/files/" + fileKey + "?depth=5"
 	headers := figmaHeaders(token)
 	status, body, err := s.doLarge(r, http.MethodGet, rawURL, headers)
 	if err != nil {
@@ -310,7 +311,7 @@ func (s *Service) readFigmaFile(r *http.Request, token, fileKey string) (string,
 		return "", "", nil, fmt.Errorf("Could not refresh the Figma file.")
 	}
 	name := firstNonEmpty(str(root["name"]), fileKey)
-	version := firstNonEmpty(str(root["version"]), str(root["lastModified"]))
+	version := figmaRevision(root)
 	document, _ := root["document"].(map[string]any)
 	pages, _ := document["children"].([]any)
 	screens := make([]figmaScreen, 0)
@@ -335,6 +336,60 @@ func (s *Service) readFigmaFile(r *http.Request, token, fileKey string) (string,
 		}
 	}
 	return name, version, screens, nil
+}
+
+func (s *Service) fillFigmaThumbnails(r *http.Request, token, fileKey string, screens []figmaScreen, refresh bool) []figmaScreen {
+	if len(screens) == 0 || strings.TrimSpace(token) == "" || fileKey == "" {
+		return screens
+	}
+	needs := refresh
+	if !needs {
+		for _, screen := range screens {
+			if strings.TrimSpace(screen.ThumbnailURL) == "" {
+				needs = true
+				break
+			}
+		}
+	}
+	if !needs {
+		return screens
+	}
+	ids := make([]string, 0, 12)
+	for _, screen := range screens {
+		if screen.NodeID == "" || len(ids) >= 12 {
+			continue
+		}
+		if !refresh && strings.TrimSpace(screen.ThumbnailURL) != "" {
+			continue
+		}
+		ids = append(ids, screen.NodeID)
+	}
+	if len(ids) == 0 {
+		return screens
+	}
+	escaped := make([]string, len(ids))
+	for i, id := range ids {
+		escaped[i] = url.QueryEscape(id)
+	}
+	rawURL := "https://api.figma.com/v1/images/" + url.PathEscape(fileKey) + "?ids=" + strings.Join(escaped, ",") + "&format=png&scale=1"
+	status, body, err := s.do(r.Context(), http.MethodGet, rawURL, figmaHeaders(token), nil)
+	if err != nil || status == http.StatusTooManyRequests || status < 200 || status >= 300 {
+		return screens
+	}
+	var payload map[string]any
+	if json.Unmarshal([]byte(body), &payload) != nil {
+		return screens
+	}
+	images, _ := payload["images"].(map[string]any)
+	if len(images) == 0 {
+		return screens
+	}
+	for i := range screens {
+		if imageURL := str(images[screens[i].NodeID]); imageURL != "" {
+			screens[i].ThumbnailURL = imageURL
+		}
+	}
+	return screens
 }
 
 func (s *Service) doLarge(r *http.Request, method, rawURL string, headers map[string]string) (int, string, error) {
@@ -454,7 +509,7 @@ func (s *Service) saveFigmaDesign(r *http.Request, row figmaDesignRow) error {
 			snapshot_json = EXCLUDED.snapshot_json,
 			updated_at = NOW()`,
 		row.ProjectID, row.FileKey, nullStr(clip(row.FileName, 255)), nullStr(clip(row.FileURL, 500)), row.SyncJira,
-		nullStr(clip(row.WebhookID, 120)), nullStr(clip(row.WebhookPasscode, 120)), nullStr(clip(row.WebhookStatus, 120)), nullStr(clip(row.FileVersion, 80)),
+		nullStr(clip(row.WebhookID, 120)), nullStr(clip(row.WebhookPasscode, 120)), nullStr(clip(row.WebhookStatus, 120)), nullStr(clip(row.FileVersion, 240)),
 		nullStr(clip(row.LastSyncedAt, 40)), nullStr(row.LastSyncSummary), string(raw),
 	)
 	return err
@@ -483,23 +538,43 @@ func isFigmaScreen(kind string) bool {
 	}
 }
 
+func figmaRevision(root map[string]any) string {
+	return strings.Trim(str(root["lastModified"])+"|"+str(root["version"]), "|")
+}
+
 func screenFingerprint(node map[string]any) string {
-	children, _ := node["children"].([]any)
-	b := strings.Builder{}
+	var b strings.Builder
+	writeFigmaFingerprint(&b, node, 0)
+	sum := sha256.Sum256([]byte(b.String()))
+	return hex.EncodeToString(sum[:8])
+}
+
+func writeFigmaFingerprint(b *strings.Builder, node map[string]any, depth int) {
 	b.WriteString(str(node["name"]))
 	b.WriteByte('|')
 	b.WriteString(str(node["type"]))
 	b.WriteByte('|')
+	b.WriteString(str(node["characters"]))
+	if box, ok := node["absoluteBoundingBox"].(map[string]any); ok {
+		b.WriteByte('|')
+		b.WriteString(str(box["width"]))
+		b.WriteByte('|')
+		b.WriteString(str(box["height"]))
+	}
+	if depth >= 6 {
+		return
+	}
+	children, _ := node["children"].([]any)
+	b.WriteByte('|')
 	b.WriteString(strconv.Itoa(len(children)))
 	for _, childRaw := range children {
 		child, _ := childRaw.(map[string]any)
-		b.WriteByte('|')
-		b.WriteString(str(child["name"]))
-		b.WriteByte(':')
-		b.WriteString(str(child["type"]))
+		if child == nil {
+			continue
+		}
+		b.WriteByte(';')
+		writeFigmaFingerprint(b, child, depth+1)
 	}
-	sum := sha256.Sum256([]byte(b.String()))
-	return hex.EncodeToString(sum[:8])
 }
 
 func screensFromRequest(v any) []figmaScreen {
@@ -777,6 +852,31 @@ func markLinkedScreens(screens []figmaScreen, reason string) []figmaChange {
 		changes = append(changes, figmaChange{screen.NodeID, screen.Name, screen.JiraKey, "Screen \"" + screen.Name + "\" " + reason})
 	}
 	return changes
+}
+
+func figmaSyncSummary(changes []figmaChange, updates []any) string {
+	if len(updates) == 0 {
+		return fmt.Sprintf("%d screen change%s detected. Link a Jira ticket to post a comment.", len(changes), plural(len(changes)))
+	}
+	var posted []string
+	var failed string
+	for _, raw := range updates {
+		item, _ := raw.(map[string]any)
+		key := str(item["issueKey"])
+		if str(item["status"]) == "failed" {
+			if failed == "" {
+				failed = firstNonEmpty(str(item["message"]), "Could not comment on "+key)
+			}
+			continue
+		}
+		if key != "" {
+			posted = append(posted, key)
+		}
+	}
+	if len(posted) > 0 {
+		return "Posted a Figma update on " + strings.Join(posted, ", ") + "."
+	}
+	return firstNonEmpty(failed, fmt.Sprintf("%d screen change%s detected.", len(changes), plural(len(changes))))
 }
 
 func changesToMaps(changes []figmaChange) []any {
