@@ -453,9 +453,9 @@ func (s *Service) saveFigmaDesign(r *http.Request, row figmaDesignRow) error {
 			last_sync_summary = EXCLUDED.last_sync_summary,
 			snapshot_json = EXCLUDED.snapshot_json,
 			updated_at = NOW()`,
-		row.ProjectID, row.FileKey, nullStr(row.FileName), nullStr(row.FileURL), row.SyncJira,
-		nullStr(row.WebhookID), nullStr(row.WebhookPasscode), nullStr(row.WebhookStatus), nullStr(row.FileVersion),
-		nullStr(row.LastSyncedAt), nullStr(row.LastSyncSummary), string(raw),
+		row.ProjectID, row.FileKey, nullStr(clip(row.FileName, 255)), nullStr(clip(row.FileURL, 500)), row.SyncJira,
+		nullStr(clip(row.WebhookID, 120)), nullStr(clip(row.WebhookPasscode, 120)), nullStr(clip(row.WebhookStatus, 120)), nullStr(clip(row.FileVersion, 80)),
+		nullStr(clip(row.LastSyncedAt, 40)), nullStr(row.LastSyncSummary), string(raw),
 	)
 	return err
 }
@@ -556,6 +556,18 @@ func truthy(v any) bool {
 	default:
 		return v != nil
 	}
+}
+
+func clip(s string, max int) string {
+	s = strings.TrimSpace(s)
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max])
 }
 
 func plural(n int) string {
@@ -871,7 +883,7 @@ func (s *Service) ensureFigmaWebhook(r *http.Request, token string, row *figmaDe
 	}
 	detail := strings.ToLower(firstNonEmpty(jsonText(body, "err"), jsonText(body, "message"), jsonText(body, "error"), body))
 	if status == http.StatusForbidden && (strings.Contains(detail, "plan") || strings.Contains(detail, "starter") || strings.Contains(detail, "upgrade")) {
-		row.WebhookStatus = "Figma Starter cannot update tickets automatically. Put this file in a Professional team, reconnect Figma, then click Sync once."
+		row.WebhookStatus = "starter: automatic updates need a Professional team"
 		return
 	}
 	if status == http.StatusForbidden && strings.Contains(detail, "scope") {
