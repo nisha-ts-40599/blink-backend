@@ -81,4 +81,31 @@ public class JpaProjectIntegrationStore implements ProjectIntegrationStore {
                         row.getExpiresAt()
                 ));
     }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<StoredIntegration> findLatest(String provider) {
+        if (provider == null || provider.isBlank()) {
+            return Optional.empty();
+        }
+        return repository.findFirstByProviderOrderByIdDesc(provider.trim().toLowerCase(Locale.ROOT))
+                .map(row -> new StoredIntegration(
+                        row.getProjectId(),
+                        row.getProvider(),
+                        row.getAccount(),
+                        row.getBaseUrl(),
+                        row.getEmail(),
+                        row.getUsername(),
+                        row.getOrganization(),
+                        row.getWorkspace(),
+                        row.getProjectKey(),
+                        row.getProjectName(),
+                        row.getSpaceKey(),
+                        row.getCloudId(),
+                        row.getAuthType(),
+                        encryption.decrypt(row.getAccessTokenEnc()),
+                        encryption.decrypt(row.getRefreshTokenEnc()),
+                        row.getExpiresAt()
+                ));
+    }
 }

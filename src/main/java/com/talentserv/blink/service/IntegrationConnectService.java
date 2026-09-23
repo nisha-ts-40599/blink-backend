@@ -45,6 +45,10 @@ import com.talentserv.blink.dto.JiraCreateIssuesRequest;
 import com.talentserv.blink.dto.JiraCreateIssuesResponse;
 import com.talentserv.blink.dto.JiraCreatedIssue;
 import com.talentserv.blink.dto.JiraDeleteIssuesRequest;
+import com.talentserv.blink.dto.JiraIssueStatusItem;
+import com.talentserv.blink.dto.JiraIssueStatusesRequest;
+import com.talentserv.blink.dto.JiraIssueStatusesResponse;
+import com.talentserv.blink.dto.JiraIssueTransitionRequest;
 import com.talentserv.blink.dto.JiraCommentCreateRequest;
 import com.talentserv.blink.dto.JiraCommentCreateResponse;
 import com.talentserv.blink.dto.JiraCommentPollRequest;
@@ -80,6 +84,8 @@ public class IntegrationConnectService {
             "current_user:read,file_content:read,file_metadata:read";
     private static final Pattern SOURCE_EPIC_LINE = Pattern.compile("(?m)^Source epic:\\s*(\\S+)\\s*$");
     private static final Pattern SOURCE_STORY_LINE = Pattern.compile("(?m)^Source story:\\s*(\\S+)\\s*$");
+    private static final Pattern JIRA_ISSUE_KEY = Pattern.compile("^[A-Za-z][A-Za-z0-9_]*-\\d+$");
+    private static final Pattern JIRA_PROJECT_KEY = Pattern.compile("^[A-Za-z][A-Za-z0-9_]+$");
     private static final int JIRA_SEARCH_PAGE = 50;
     private static final int JIRA_SEARCH_MAX = 500;
 
@@ -608,32 +614,36 @@ public class IntegrationConnectService {
             throw new ApiException(HttpStatus.BAD_REQUEST, "Jira create request is required.");
         }
         String projectKey = required(request.projectKey(), "Jira project key is required.");
-        StoredIntegration stored = load(parseProjectId(request.projectId()), "jira").orElse(null);
+        Long projectId = parseProjectId(request.projectId());
+        StoredIntegration stored = resolveStoredJira(projectId);
+        boolean oauth = storedJiraIsOAuth(stored);
         JiraCallContext ctx = resolveJiraCall(
                 firstNonBlank(request.baseUrl(), stored == null ? null : stored.baseUrl()),
                 firstNonBlank(request.email(), stored == null ? null : stored.email()),
-                firstNonBlank(request.token(), stored != null && !"oauth".equals(stored.authType()) ? stored.accessToken() : null),
+                firstNonBlank(request.token(), stored != null && !oauth ? stored.accessToken() : null),
                 firstNonBlank(request.cloudId(), stored == null ? null : stored.cloudId()),
-                firstNonBlank(request.accessToken(), stored != null && "oauth".equals(stored.authType()) ? stored.accessToken() : null)
+                firstNonBlank(request.accessToken(), stored != null && oauth ? stored.accessToken() : null)
         );
-        persist(
-                parseProjectId(request.projectId()),
-                "jira",
-                stored == null ? null : stored.account(),
-                stored == null ? null : stored.baseUrl(),
-                stored == null ? null : stored.email(),
-                null,
-                null,
-                null,
-                projectKey,
-                stored == null ? null : stored.projectName(),
-                null,
-                stored == null ? null : stored.cloudId(),
-                stored == null ? "oauth" : stored.authType(),
-                stored == null ? null : stored.accessToken(),
-                stored == null ? null : stored.refreshToken(),
-                stored == null ? null : stored.expiresAt()
-        );
+        if (stored != null) {
+            persist(
+                    projectId,
+                    "jira",
+                    stored.account(),
+                    stored.baseUrl(),
+                    stored.email(),
+                    stored.username(),
+                    stored.organization(),
+                    stored.workspace(),
+                    projectKey,
+                    stored.projectName(),
+                    stored.spaceKey(),
+                    stored.cloudId(),
+                    oauth ? "oauth" : stored.authType(),
+                    stored.accessToken(),
+                    stored.refreshToken(),
+                    stored.expiresAt()
+            );
+        }
         List<JiraEpicSpec> epics = request.epics() == null ? List.of() : request.epics();
         List<JiraStorySpec> stories = request.stories() == null ? List.of() : request.stories();
         if (epics.isEmpty() && stories.isEmpty()) {
@@ -917,6 +927,239 @@ public class IntegrationConnectService {
                 List.of(),
                 List.copyOf(errors)
         );
+    }
+
+    public JiraIssueStatusesResponse fetchJiraIssueStatuses(JiraIssueStatusesRequest request) {
+        if (request == null || request.issueKeys() == null || request.issueKeys().isEmpty()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Add at least one Jira issue key.");
+        }
+        Long projectId = requireBlinkProjectId(request.projectId());
+        StoredIntegration stored = requireStoredJira(projectId);
+        String projectKey = jiraProjectKey(stored);
+        JiraCallContext ctx = resolveStoredJira(stored);
+        List<String> keys = sanitizeIssueKeys(request.issueKeys());
+        if (keys.isEmpty()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Add at least one Jira issue key.");
+        }
+
+        Map<String, JiraIssueStatusItem> byKey = new LinkedHashMap<>();
+        for (int offset = 0; offset < keys.size(); offset += JIRA_SEARCH_PAGE) {
+            List<String> chunk = keys.subList(offset, Math.min(keys.size(), offset + JIRA_SEARCH_PAGE));
+            String jql = "project = " + projectKey + " AND key in (" + String.join(", ", chunk) + ")";
+            for (JsonNode issue : searchJiraIssues(ctx, jql, List.of("status"))) {
+                JiraIssueStatusItem item = toStatusItem(issue);
+                if (item != null) {
+                    byKey.put(item.key().toUpperCase(Locale.ROOT), item);
+                }
+            }
+        }
+
+        List<JiraIssueStatusItem> ordered = new ArrayList<>();
+        for (String key : keys) {
+            JiraIssueStatusItem found = byKey.get(key.toUpperCase(Locale.ROOT));
+            ordered.add(found != null ? found : new JiraIssueStatusItem(key, null, "missing"));
+        }
+        return new JiraIssueStatusesResponse(List.copyOf(ordered));
+    }
+
+    public JiraIssueStatusItem transitionJiraIssue(JiraIssueTransitionRequest request) {
+        if (request == null) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Jira transition request is required.");
+        }
+        String target = required(request.target(), "Choose done or closed.").toLowerCase(Locale.ROOT);
+        if (!"done".equals(target) && !"closed".equals(target)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Choose done or closed.");
+        }
+        String issueKey = required(request.issueKey(), "Jira issue key is required.");
+        if (!JIRA_ISSUE_KEY.matcher(issueKey).matches()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Jira issue key is not valid.");
+        }
+        Long projectId = requireBlinkProjectId(request.projectId());
+        StoredIntegration stored = requireStoredJira(projectId);
+        String projectKey = jiraProjectKey(stored);
+        JiraCallContext ctx = resolveStoredJira(stored);
+
+        JiraIssueStatusItem current = fetchIssueStatus(ctx, projectKey, issueKey);
+        if (statusAlreadyMatches(current, target)) {
+            return current;
+        }
+
+        String transitionsUrl = ctx.apiBase() + "/rest/api/3/issue/" + encode(issueKey) + "/transitions";
+        IntegrationHttpGateway.IntegrationHttpResponse listed = http.get(transitionsUrl, ctx.headers());
+        if (listed.status() >= 400) {
+            throw new ApiException(HttpStatus.BAD_GATEWAY, jiraErrorMessage(listed.body(), listed.status()));
+        }
+        JsonNode transitionsRoot;
+        try {
+            transitionsRoot = MAPPER.readTree(listed.body() == null ? "{}" : listed.body());
+        } catch (Exception ex) {
+            throw new ApiException(HttpStatus.BAD_GATEWAY, "Could not read Jira transitions for " + issueKey + ".");
+        }
+        String transitionId = pickTransitionId(transitionsRoot, target);
+        if (transitionId == null) {
+            throw new ApiException(
+                    HttpStatus.CONFLICT,
+                    issueKey + " has no " + target + " step in its Jira workflow."
+            );
+        }
+
+        ObjectNode body = MAPPER.createObjectNode();
+        body.putObject("transition").put("id", transitionId);
+        String postUrl = ctx.apiBase() + "/rest/api/3/issue/" + encode(issueKey) + "/transitions";
+        IntegrationHttpGateway.IntegrationHttpResponse moved = http.post(postUrl, ctx.headers(), body.toString());
+        if (moved.status() >= 400 && resolutionRequired(moved.body())) {
+            ObjectNode retry = MAPPER.createObjectNode();
+            retry.putObject("transition").put("id", transitionId);
+            retry.putObject("fields").putObject("resolution").put("name", "Done");
+            moved = http.post(postUrl, ctx.headers(), retry.toString());
+        }
+        if (moved.status() >= 400) {
+            throw new ApiException(HttpStatus.BAD_GATEWAY, issueKey + ": " + jiraErrorMessage(moved.body(), moved.status()));
+        }
+        log.info("Transitioned Jira issue {} to {} projectId={}", issueKey, target, projectId);
+        return fetchIssueStatus(ctx, projectKey, issueKey);
+    }
+
+    /** Package-visible for tests. Prefer an exact Done or Closed status over a generic done-category step. */
+    static String pickTransitionId(JsonNode root, String target) {
+        if (root == null || target == null) {
+            return null;
+        }
+        JsonNode transitions = root.path("transitions");
+        if (!transitions.isArray()) {
+            return null;
+        }
+        String bestId = null;
+        int bestScore = 0;
+        for (JsonNode transition : transitions) {
+            String id = transition.path("id").asText("").trim();
+            if (id.isEmpty()) {
+                continue;
+            }
+            String name = transition.path("name").asText("");
+            String toName = transition.path("to").path("name").asText("");
+            String category = transition.path("to").path("statusCategory").path("key").asText("");
+            int score = transitionScore(target, name, toName, category);
+            if (score > bestScore) {
+                bestScore = score;
+                bestId = id;
+            }
+        }
+        return bestId;
+    }
+
+    private static int transitionScore(String target, String name, String toName, String category) {
+        String normalizedName = name == null ? "" : name.trim().toLowerCase(Locale.ROOT);
+        String normalizedTo = toName == null ? "" : toName.trim().toLowerCase(Locale.ROOT);
+        if ("closed".equals(target)) {
+            if ("closed".equals(normalizedTo)) {
+                return 100;
+            }
+            if ("closed".equals(normalizedName)) {
+                return 90;
+            }
+            if (normalizedTo.contains("closed") || normalizedName.contains("closed")) {
+                return 80;
+            }
+            return 0;
+        }
+        if ("done".equals(normalizedTo)) {
+            return 100;
+        }
+        if ("done".equals(normalizedName)) {
+            return 90;
+        }
+        if ("done".equals(category)) {
+            return 70;
+        }
+        return 0;
+    }
+
+    private static boolean statusAlreadyMatches(JiraIssueStatusItem current, String target) {
+        if (current == null || current.name() == null) {
+            return false;
+        }
+        return current.name().trim().equalsIgnoreCase(target);
+    }
+
+    private static boolean resolutionRequired(String body) {
+        if (body == null) {
+            return false;
+        }
+        String message = body.toLowerCase(Locale.ROOT);
+        return message.contains("resolution");
+    }
+
+    private JiraIssueStatusItem fetchIssueStatus(JiraCallContext ctx, String projectKey, String issueKey) {
+        String url = ctx.apiBase() + "/rest/api/3/issue/" + encode(issueKey) + "?fields=status,project";
+        IntegrationHttpGateway.IntegrationHttpResponse res = http.get(url, ctx.headers());
+        if (res.status() == 404) {
+            throw new ApiException(HttpStatus.NOT_FOUND, issueKey + " was not found in Jira.");
+        }
+        if (res.status() >= 400) {
+            throw new ApiException(HttpStatus.BAD_GATEWAY, jiraErrorMessage(res.body(), res.status()));
+        }
+        try {
+            JsonNode issue = MAPPER.readTree(res.body() == null ? "{}" : res.body());
+            String issueProject = trimToNull(issue.path("fields").path("project").path("key").asText(null));
+            if (issueProject == null || !issueProject.equalsIgnoreCase(projectKey)) {
+                throw new ApiException(HttpStatus.NOT_FOUND, issueKey + " is not in Jira project " + projectKey + ".");
+            }
+            JiraIssueStatusItem item = toStatusItem(issue);
+            if (item == null) {
+                throw new ApiException(HttpStatus.BAD_GATEWAY, "Could not read the status of " + issueKey + ".");
+            }
+            return item;
+        } catch (ApiException ex) {
+            throw ex;
+        } catch (Exception ex) {
+            throw new ApiException(HttpStatus.BAD_GATEWAY, "Could not read the status of " + issueKey + ".");
+        }
+    }
+
+    private static JiraIssueStatusItem toStatusItem(JsonNode issue) {
+        if (issue == null || issue.isMissingNode() || issue.isNull()) {
+            return null;
+        }
+        String key = trimToNull(issue.path("key").asText(null));
+        if (key == null) {
+            return null;
+        }
+        JsonNode status = issue.path("fields").path("status");
+        String name = trimToNull(status.path("name").asText(null));
+        String rawCategory = status.path("statusCategory").path("key").asText("");
+        String category = switch (rawCategory) {
+            case "new" -> "todo";
+            case "indeterminate" -> "in-progress";
+            case "done" -> "done";
+            default -> name == null ? "missing" : "unknown";
+        };
+        return new JiraIssueStatusItem(key, name, category);
+    }
+
+    private String jiraProjectKey(StoredIntegration stored) {
+        String projectKey = trimToNull(stored.projectKey());
+        if (projectKey == null || !JIRA_PROJECT_KEY.matcher(projectKey).matches()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "The connected Jira project key is not valid.");
+        }
+        return projectKey;
+    }
+
+    private static List<String> sanitizeIssueKeys(List<String> rawKeys) {
+        LinkedHashSet<String> keys = new LinkedHashSet<>();
+        if (rawKeys == null) {
+            return List.of();
+        }
+        for (String raw : rawKeys) {
+            if (raw == null) {
+                continue;
+            }
+            String key = raw.trim();
+            if (JIRA_ISSUE_KEY.matcher(key).matches()) {
+                keys.add(key);
+            }
+        }
+        return List.copyOf(keys);
     }
 
     private static boolean jiraDeleteBlockedByOtherIssues(ApiException ex) {
@@ -1699,6 +1942,158 @@ public class IntegrationConnectService {
         throw new ApiException(HttpStatus.BAD_REQUEST, "Connect Jira with OAuth or an API token before creating issues.");
     }
 
+    private StoredIntegration resolveStoredJira(Long projectId) {
+        StoredIntegration stored = load(projectId, "jira").orElse(null);
+        if (!hasJiraCredentials(stored)) {
+            StoredIntegration latest = integrations.findLatest("jira").orElse(null);
+            if (hasJiraCredentials(latest)) {
+                if (projectId != null && !projectId.equals(latest.projectId())) {
+                    log.info("Reusing Jira credentials from project {} for project {}", latest.projectId(), projectId);
+                    persist(
+                            projectId,
+                            "jira",
+                            latest.account(),
+                            latest.baseUrl(),
+                            latest.email(),
+                            latest.username(),
+                            latest.organization(),
+                            latest.workspace(),
+                            latest.projectKey(),
+                            latest.projectName(),
+                            latest.spaceKey(),
+                            latest.cloudId(),
+                            storedJiraIsOAuth(latest) ? "oauth" : latest.authType(),
+                            latest.accessToken(),
+                            latest.refreshToken(),
+                            latest.expiresAt()
+                    );
+                    stored = load(projectId, "jira").orElse(latest);
+                } else {
+                    stored = latest;
+                }
+            }
+        }
+        return refreshJiraAccess(stored, projectId);
+    }
+
+    private static boolean hasJiraCredentials(StoredIntegration stored) {
+        if (stored == null) {
+            return false;
+        }
+        boolean oauth = stored.cloudId() != null && !stored.cloudId().isBlank()
+                && stored.accessToken() != null && !stored.accessToken().isBlank();
+        boolean basic = stored.baseUrl() != null && !stored.baseUrl().isBlank()
+                && stored.email() != null && !stored.email().isBlank()
+                && stored.accessToken() != null && !stored.accessToken().isBlank();
+        return oauth || basic;
+    }
+
+    private static boolean storedJiraIsOAuth(StoredIntegration stored) {
+        if (stored == null) {
+            return false;
+        }
+        if (stored.authType() != null && "oauth".equalsIgnoreCase(stored.authType().trim())) {
+            return true;
+        }
+        return stored.cloudId() != null && !stored.cloudId().isBlank();
+    }
+
+    private static boolean jiraAccessExpired(StoredIntegration stored) {
+        if (stored == null || stored.expiresAt() == null) {
+            return false;
+        }
+        return !stored.expiresAt().isAfter(Instant.now().plusSeconds(60));
+    }
+
+    private StoredIntegration refreshJiraAccess(StoredIntegration stored, Long projectId) {
+        if (stored == null) {
+            return stored;
+        }
+        boolean expired = jiraAccessExpired(stored);
+        if (stored.refreshToken() == null || stored.refreshToken().isBlank()) {
+            if (expired && storedJiraIsOAuth(stored)) {
+                throw new ApiException(HttpStatus.UNAUTHORIZED, "Jira session expired. Reconnect Jira on Integrations.");
+            }
+            return stored;
+        }
+        if (!expired) {
+            return stored;
+        }
+        String clientId = properties.getJiraClientId() == null ? "" : properties.getJiraClientId().trim();
+        String clientSecret = properties.getJiraClientSecret() == null ? "" : properties.getJiraClientSecret().trim();
+        if (clientId.isBlank() || clientSecret.isBlank()) {
+            throw new ApiException(HttpStatus.UNAUTHORIZED, "Jira session expired. Reconnect Jira on Integrations.");
+        }
+        try {
+            String tokenJson = writeJson(Map.of(
+                    "grant_type", "refresh_token",
+                    "client_id", clientId,
+                    "client_secret", clientSecret,
+                    "refresh_token", stored.refreshToken()
+            ));
+            IntegrationHttpGateway.IntegrationHttpResponse tokenRes = http.post(
+                    "https://auth.atlassian.com/oauth/token",
+                    Map.of("Accept", "application/json"),
+                    tokenJson,
+                    "application/json"
+            );
+            if (tokenRes.status() == 415) {
+                String form = "grant_type=refresh_token"
+                        + "&client_id=" + encode(clientId)
+                        + "&client_secret=" + encode(clientSecret)
+                        + "&refresh_token=" + encode(stored.refreshToken());
+                tokenRes = http.post(
+                        "https://auth.atlassian.com/oauth/token",
+                        Map.of("Accept", "application/json"),
+                        form,
+                        "application/x-www-form-urlencoded"
+                );
+            }
+            if (tokenRes.status() < 200 || tokenRes.status() >= 300) {
+                log.warn("Jira OAuth refresh failed status={} body={}", tokenRes.status(), abbreviate(tokenRes.body(), 240));
+                throw new ApiException(HttpStatus.UNAUTHORIZED, "Jira session expired. Reconnect Jira on Integrations.");
+            }
+            String accessToken = firstText(tokenRes.body(), "access_token");
+            if (accessToken.isBlank()) {
+                throw new ApiException(HttpStatus.UNAUTHORIZED, "Jira session expired. Reconnect Jira on Integrations.");
+            }
+            String refreshToken = firstNonBlank(firstText(tokenRes.body(), "refresh_token"), stored.refreshToken());
+            Instant expiresAt = Instant.now().plusSeconds(3600);
+            try {
+                int expiresIn = MAPPER.readTree(tokenRes.body()).path("expires_in").asInt(0);
+                if (expiresIn > 0) {
+                    expiresAt = Instant.now().plusSeconds(expiresIn);
+                }
+            } catch (Exception ignored) {
+            }
+            Long persistId = projectId != null ? projectId : stored.projectId();
+            persist(
+                    persistId,
+                    "jira",
+                    stored.account(),
+                    stored.baseUrl(),
+                    stored.email(),
+                    stored.username(),
+                    stored.organization(),
+                    stored.workspace(),
+                    stored.projectKey(),
+                    stored.projectName(),
+                    stored.spaceKey(),
+                    stored.cloudId(),
+                    "oauth",
+                    accessToken,
+                    refreshToken,
+                    expiresAt
+            );
+            return load(persistId, "jira").orElse(stored);
+        } catch (ApiException ex) {
+            throw ex;
+        } catch (Exception ex) {
+            log.warn("Jira OAuth refresh failed: {}", ex.toString());
+            throw new ApiException(HttpStatus.UNAUTHORIZED, "Jira session expired. Reconnect Jira on Integrations.");
+        }
+    }
+
     private ObjectNode adfDocument(String text) {
         ObjectNode doc = MAPPER.createObjectNode();
         doc.put("type", "doc");
@@ -2167,7 +2562,8 @@ public class IntegrationConnectService {
     private IntegrationHttpGateway.IntegrationHttpResponse getJson(String url, Map<String, String> headers) {
         IntegrationHttpGateway.IntegrationHttpResponse response = http.get(url, headers);
         if (response.status() == 401 || response.status() == 403) {
-            throw new ApiException(HttpStatus.UNAUTHORIZED, "Invalid credentials or insufficient permission.");
+            log.warn("Provider auth failed url={} status={} body={}", url, response.status(), abbreviate(response.body(), 240));
+            throw new ApiException(HttpStatus.UNAUTHORIZED, authFailureMessage(url));
         }
         if (response.status() == 404) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "Account, organization, project, or space was not found.");
@@ -2176,6 +2572,23 @@ public class IntegrationConnectService {
             throw new ApiException(HttpStatus.BAD_GATEWAY, "Provider returned HTTP " + response.status() + ".");
         }
         return response;
+    }
+
+    private static String authFailureMessage(String url) {
+        String host = url == null ? "" : url.toLowerCase(Locale.ROOT);
+        if (host.contains("api.figma.com")) {
+            return "Figma rejected this token. Use Continue with Figma, or paste a personal access token (starts with figd_) that includes Current user, File content, and File metadata.";
+        }
+        if (host.contains("api.github.com")) {
+            return "Invalid credentials or insufficient permission.";
+        }
+        if (host.contains("atlassian") || host.contains("/jira") || host.contains("/wiki/")) {
+            return "Atlassian rejected these credentials. Reconnect Jira or Confluence on Integrations.";
+        }
+        if (host.contains("bitbucket")) {
+            return "Bitbucket rejected this token. Check the username, workspace, and app password.";
+        }
+        return "Invalid credentials or insufficient permission.";
     }
 
     private String writeJson(Map<String, String> payload) {
@@ -2457,7 +2870,7 @@ public class IntegrationConnectService {
     }
 
     private Map<String, String> figmaHeaders(String token) {
-        return Map.of("Authorization", "Bearer " + token);
+        return FigmaAuth.headers(token);
     }
 
     private Map<String, String> githubHeaders(String token) {
@@ -2496,7 +2909,7 @@ public class IntegrationConnectService {
         return URLEncoder.encode(value, StandardCharsets.UTF_8);
     }
 
-    private String trimToNull(String value) {
+    private static String trimToNull(String value) {
         if (value == null) {
             return null;
         }

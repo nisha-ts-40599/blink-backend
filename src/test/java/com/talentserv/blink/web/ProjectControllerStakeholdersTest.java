@@ -201,4 +201,28 @@ class ProjectControllerStakeholdersTest {
         assertThat(res.epicIds()).containsExactly("FITOYO-EPIC-01");
         assertThat(res.storyIds()).containsExactly("FITOYO-STORY-01", "FITOYO-STORY-02");
     }
+
+    @Test
+    void proposeDesignsEndpointInvokesAgent() {
+        Project project = new Project();
+        project.setId(21L);
+        project.setProjectName("Fitoyo");
+        when(projectService.requireProject(21L)).thenReturn(project);
+
+        ObjectNode agentResponse = MAPPER.createObjectNode();
+        agentResponse.put("status", "ok");
+        agentResponse.put("command", "propose-designs");
+        agentResponse.put("nextCommand", "/ingest-design");
+        agentResponse.put("message", "Proposed 3 design directions. Pick one — Blink will not create a Figma file.");
+
+        when(agentRuntimeService.invoke(any())).thenReturn(agentResponse);
+
+        ObjectNode body = MAPPER.createObjectNode();
+        body.put("requirementText", "Operators log in and review visits.");
+        var res = controller.proposeDesigns(21L, body);
+
+        assertThat(res.path("status").asText()).isEqualTo("ok");
+        assertThat(res.path("command").asText()).isEqualTo("propose-designs");
+        verify(agentRuntimeService).invoke(any());
+    }
 }

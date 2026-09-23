@@ -78,6 +78,11 @@ public class BlinkProperties {
     private String figmaRedirectUri = "";
     private String figmaScopes = "current_user:read,file_content:read,file_metadata:read";
     /**
+     * Public HTTPS base Blink uses when registering a Figma FILE_UPDATE webhook.
+     * Localhost is skipped because Figma cannot reach it.
+     */
+    private String figmaWebhookPublicBase = "";
+    /**
      * Passphrase used to derive the AES key for per-project GitHub/Jira tokens.
      */
     private String integrationSecretKey = "";
@@ -337,6 +342,14 @@ public class BlinkProperties {
 
     public void setFigmaScopes(String figmaScopes) {
         this.figmaScopes = figmaScopes;
+    }
+
+    public String getFigmaWebhookPublicBase() {
+        return figmaWebhookPublicBase;
+    }
+
+    public void setFigmaWebhookPublicBase(String figmaWebhookPublicBase) {
+        this.figmaWebhookPublicBase = figmaWebhookPublicBase;
     }
 
     public String getIntegrationSecretKey() {

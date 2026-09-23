@@ -51,6 +51,7 @@ import com.talentserv.blink.config.BlinkProperties;
 import jakarta.validation.Valid;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.ObjectNode;
 
 @RestController
 @RequestMapping("/api/projects")
@@ -175,6 +176,24 @@ public class ProjectController {
             @Valid @RequestBody PlanProductScopeRequest request
     ) {
         return projectGovernanceService.planProductScopeStandalone(request);
+    }
+
+    @PostMapping("/{id}/propose-designs")
+    public JsonNode proposeDesigns(
+            @PathVariable Long id,
+            @RequestBody(required = false) JsonNode body
+    ) {
+        Project project = projectService.requireProject(id);
+        JsonNode result = agentRuntimeService.invoke(
+                proposeDesignsPayload(body, project.getProjectName(), String.valueOf(id))
+        );
+        persistProposeOverlays(project.getProjectName(), id, result);
+        return result;
+    }
+
+    @PostMapping("/propose-designs")
+    public JsonNode proposeDesignsStandalone(@RequestBody(required = false) JsonNode body) {
+        return agentRuntimeService.invoke(proposeDesignsPayload(body, null, null));
     }
 
     @GetMapping("/{id}")
@@ -334,5 +353,31 @@ public class ProjectController {
             return project.withWorkspace(null, null, null);
         }
         return project.withWorkspace(key, url, s3WorkspaceService.status(project.projectName(), project.id()));
+    }
+
+    private ObjectNode proposeDesignsPayload(JsonNode body, String projectName, String projectId) {
+        ObjectNode payload = MAPPER.createObjectNode();
+        if (body != null && body.isObject()) {
+            payload.setAll((ObjectNode) body);
+        }
+        payload.put("command", "propose-designs");
+        if (projectId != null && !projectId.isBlank()) {
+            payload.put("projectId", projectId);
+        }
+        if (projectName != null && !projectName.isBlank()
+                && (!payload.hasNonNull("projectName") || payload.path("projectName").asText("").isBlank())) {
+            payload.put("projectName", projectName);
+        }
+        return payload;
+    }
+
+    private void persistProposeOverlays(String projectName, Long projectId, JsonNode result) {
+        if (!s3WorkspaceService.enabled() || result == null || projectId == null) {
+            return;
+        }
+        List<ZipPackageService.OverlayFile> files = SetupAgentService.overlayFiles(result);
+        if (!files.isEmpty()) {
+            s3WorkspaceService.putCursorOverlayAsync(projectName, projectId, files);
+        }
     }
 }

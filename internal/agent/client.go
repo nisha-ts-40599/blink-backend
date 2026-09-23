@@ -155,6 +155,14 @@ func (c *Client) ClassifyWork(ctx context.Context, payload map[string]any) (json
 	return c.Invoke(ctx, payload)
 }
 
+func (c *Client) ProposeDesigns(ctx context.Context, payload map[string]any) (json.RawMessage, error) {
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	payload["command"] = "propose-designs"
+	return c.Invoke(ctx, payload)
+}
+
 func (c *Client) CreateSpec(ctx context.Context, payload map[string]any) (json.RawMessage, error) {
 	if payload == nil {
 		payload = map[string]any{}

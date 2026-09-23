@@ -10,6 +10,10 @@ public interface ProjectIntegrationStore {
 
     Optional<StoredIntegration> find(Long projectId, String provider);
 
+    default Optional<StoredIntegration> findLatest(String provider) {
+        return Optional.empty();
+    }
+
     static ProjectIntegrationStore noop() {
         return new ProjectIntegrationStore() {
             @Override
