@@ -7,6 +7,8 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 
 import org.springframework.http.HttpStatus;
@@ -82,7 +84,13 @@ public class DefaultIntegrationHttpGateway implements IntegrationHttpGateway {
         }
         try {
             HttpResponse<String> response = client.send(builder.build(), HttpResponse.BodyHandlers.ofString());
-            return new IntegrationHttpResponse(response.statusCode(), response.body() == null ? "" : response.body());
+            Map<String, String> responseHeaders = new LinkedHashMap<>();
+            response.headers().map().forEach((name, values) -> {
+                if (name != null && values != null && !values.isEmpty() && "retry-after".equals(name.toLowerCase(Locale.ROOT))) {
+                    responseHeaders.put(name, values.get(0));
+                }
+            });
+            return new IntegrationHttpResponse(response.statusCode(), response.body() == null ? "" : response.body(), responseHeaders);
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
             throw new ApiException(HttpStatus.GATEWAY_TIMEOUT, "Connection timed out.");

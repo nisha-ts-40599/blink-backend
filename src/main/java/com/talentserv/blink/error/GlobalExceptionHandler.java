@@ -8,8 +8,10 @@ import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.HttpMediaTypeNotAcceptableException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
@@ -21,12 +23,16 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(ApiException.class)
     ResponseEntity<Map<String, String>> handleApi(ApiException ex) {
-        return ResponseEntity.status(ex.getStatus()).body(Map.of("message", ex.getMessage()));
+        return ResponseEntity.status(ex.getStatus())
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of("message", ex.getMessage()));
     }
 
     @ExceptionHandler(IllegalArgumentException.class)
     ResponseEntity<Map<String, String>> handleIllegalArgument(IllegalArgumentException ex) {
-        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of("message", ex.getMessage()));
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of("message", ex.getMessage()));
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
@@ -37,12 +43,23 @@ public class GlobalExceptionHandler {
         if (message.isBlank()) {
             message = "Request is invalid.";
         }
-        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of("message", message));
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of("message", message));
     }
 
     @ExceptionHandler(NoResourceFoundException.class)
     ResponseEntity<Map<String, String>> handleMissing(NoResourceFoundException ex) {
-        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("message", "Not found"));
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of("message", "Not found"));
+    }
+
+    @ExceptionHandler(HttpMediaTypeNotAcceptableException.class)
+    ResponseEntity<Map<String, String>> handleNotAcceptable(HttpMediaTypeNotAcceptableException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_ACCEPTABLE)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of("message", "Request failed. Try again."));
     }
 
     @ExceptionHandler(Exception.class)
@@ -61,7 +78,9 @@ public class GlobalExceptionHandler {
         }
         Map<String, String> body = new LinkedHashMap<>();
         body.put("message", message);
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(body);
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(body);
     }
 
     private static boolean looksLikeTransportDetail(String message) {

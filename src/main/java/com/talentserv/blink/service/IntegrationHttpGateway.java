@@ -22,6 +22,26 @@ public interface IntegrationHttpGateway {
         throw new UnsupportedOperationException("DELETE is not supported.");
     }
 
-    record IntegrationHttpResponse(int status, String body) {
+    record IntegrationHttpResponse(int status, String body, Map<String, String> headers) {
+        public IntegrationHttpResponse(int status, String body) {
+            this(status, body, Map.of());
+        }
+
+        public IntegrationHttpResponse {
+            body = body == null ? "" : body;
+            headers = headers == null ? Map.of() : Map.copyOf(headers);
+        }
+
+        public String header(String name) {
+            if (name == null || headers == null) {
+                return null;
+            }
+            for (Map.Entry<String, String> entry : headers.entrySet()) {
+                if (entry.getKey() != null && entry.getKey().equalsIgnoreCase(name)) {
+                    return entry.getValue();
+                }
+            }
+            return null;
+        }
     }
 }

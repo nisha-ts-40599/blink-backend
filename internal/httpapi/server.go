@@ -122,6 +122,8 @@ func New(cfg config.Config, authSvc *auth.Service, proj *project.Service, agentC
 				prr.Post("/plan-product-scope", s.planProductScope)
 				prr.Post("/{id}/confirm-product-scope", s.confirmProductScope)
 				prr.Post("/{id}/classify-work", s.classifyWork)
+				prr.Post("/{id}/propose-designs", s.proposeDesigns)
+				prr.Post("/propose-designs", s.proposeDesignsStandalone)
 				prr.Post("/{id}/create-spec", s.createSpec)
 				prr.Post("/{id}/technical-plan", s.technicalPlan)
 				prr.Post("/{id}/grooming-stakeholder-pack", s.groomingStakeholderPack)

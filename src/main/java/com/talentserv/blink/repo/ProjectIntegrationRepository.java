@@ -9,4 +9,6 @@ import com.talentserv.blink.domain.ProjectIntegration;
 public interface ProjectIntegrationRepository extends JpaRepository<ProjectIntegration, Long> {
 
     Optional<ProjectIntegration> findByProjectIdAndProvider(Long projectId, String provider);
+
+    Optional<ProjectIntegration> findFirstByProviderOrderByIdDesc(String provider);
 }

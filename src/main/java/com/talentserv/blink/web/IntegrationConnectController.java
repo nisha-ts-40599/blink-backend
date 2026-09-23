@@ -3,6 +3,7 @@ package com.talentserv.blink.web;
 import java.util.List;
 
 import org.springframework.http.MediaType;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -12,10 +13,18 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.talentserv.blink.dto.CreateRepositoriesRequest;
 import com.talentserv.blink.dto.CreateRepositoriesResponse;
+import com.talentserv.blink.dto.FigmaDesignBindingRequest;
+import com.talentserv.blink.dto.FigmaDesignBindingResponse;
+import com.talentserv.blink.dto.FigmaFileItem;
+import com.talentserv.blink.dto.FigmaFilesRequest;
+import com.talentserv.blink.dto.FigmaFrameItem;
+import com.talentserv.blink.dto.FigmaFramesRequest;
+import com.talentserv.blink.dto.FigmaIngestRequest;
 import com.talentserv.blink.dto.FigmaOAuthExchangeRequest;
 import com.talentserv.blink.dto.FigmaOAuthUrlResponse;
 import com.talentserv.blink.dto.FigmaProjectsRequest;
 import com.talentserv.blink.dto.FigmaTeamsRequest;
+import com.talentserv.blink.dto.FigmaWebhookResult;
 import com.talentserv.blink.dto.GithubOAuthExchangeRequest;
 import com.talentserv.blink.dto.GithubOAuthUrlResponse;
 import com.talentserv.blink.dto.GithubOrgDto;
@@ -30,6 +39,10 @@ import com.talentserv.blink.dto.JiraProjectsRequest;
 import com.talentserv.blink.dto.JiraCreateIssuesRequest;
 import com.talentserv.blink.dto.JiraCreateIssuesResponse;
 import com.talentserv.blink.dto.JiraDeleteIssuesRequest;
+import com.talentserv.blink.dto.JiraIssueStatusItem;
+import com.talentserv.blink.dto.JiraIssueStatusesRequest;
+import com.talentserv.blink.dto.JiraIssueStatusesResponse;
+import com.talentserv.blink.dto.JiraIssueTransitionRequest;
 import com.talentserv.blink.dto.BlinkJiraIssueDeleteResponse;
 import com.talentserv.blink.dto.JiraCommentCreateRequest;
 import com.talentserv.blink.dto.JiraCommentCreateResponse;
@@ -37,6 +50,7 @@ import com.talentserv.blink.dto.JiraCommentPollRequest;
 import com.talentserv.blink.dto.JiraCommentPollResponse;
 import com.talentserv.blink.dto.JiraEpicSpec;
 import com.talentserv.blink.dto.JiraStorySpec;
+import com.talentserv.blink.service.FigmaDesignService;
 import com.talentserv.blink.service.IntegrationConnectService;
 import com.talentserv.blink.service.OAuthRedirectResolver;
 
@@ -48,9 +62,14 @@ import jakarta.validation.Valid;
 public class IntegrationConnectController {
 
     private final IntegrationConnectService integrationConnectService;
+    private final FigmaDesignService figmaDesignService;
 
-    public IntegrationConnectController(IntegrationConnectService integrationConnectService) {
+    public IntegrationConnectController(
+            IntegrationConnectService integrationConnectService,
+            FigmaDesignService figmaDesignService
+    ) {
         this.integrationConnectService = integrationConnectService;
+        this.figmaDesignService = figmaDesignService;
     }
 
     @PostMapping("/connect")
@@ -122,7 +141,56 @@ public class IntegrationConnectController {
         return integrationConnectService.fetchFigmaProjects(request);
     }
 
-    @PostMapping("/jira/issues")
+    @PostMapping("/figma/files")
+    public List<FigmaFileItem> fetchFigmaFiles(@RequestBody FigmaFilesRequest request) {
+        return figmaDesignService.listFiles(request);
+    }
+
+    @PostMapping("/figma/frames")
+    public List<FigmaFrameItem> fetchFigmaFrames(@RequestBody FigmaFramesRequest request) {
+        return figmaDesignService.listFrames(request);
+    }
+
+    @GetMapping("/figma/design")
+    public FigmaDesignBindingResponse getFigmaDesign(@RequestParam String projectId) {
+        return figmaDesignService.getBinding(projectId);
+    }
+
+    @DeleteMapping("/figma/design")
+    public FigmaDesignBindingResponse clearFigmaDesign(@RequestParam String projectId) {
+        return figmaDesignService.clearBinding(projectId);
+    }
+
+    @PostMapping("/figma/design")
+    public FigmaDesignBindingResponse saveFigmaDesign(
+            @RequestBody FigmaDesignBindingRequest request,
+            HttpServletRequest httpRequest
+    ) {
+        return figmaDesignService.saveBinding(withWebhookBase(request, httpRequest));
+    }
+
+    @PostMapping("/figma/ingest")
+    public FigmaDesignBindingResponse ingestFigmaDesign(
+            @RequestBody FigmaIngestRequest request,
+            HttpServletRequest httpRequest
+    ) {
+        return figmaDesignService.ingest(withWebhookBase(request, httpRequest));
+    }
+
+    @PostMapping("/figma/sync")
+    public FigmaDesignBindingResponse syncFigmaDesign(
+            @RequestBody FigmaIngestRequest request,
+            HttpServletRequest httpRequest
+    ) {
+        return figmaDesignService.ingest(withWebhookBase(request, httpRequest));
+    }
+
+    @PostMapping(value = "/figma/webhooks", consumes = {MediaType.APPLICATION_JSON_VALUE, MediaType.ALL_VALUE})
+    public FigmaWebhookResult figmaWebhook(@RequestBody(required = false) String body) {
+        return figmaDesignService.handleWebhook(body == null ? "" : body);
+    }
+
+    @PostMapping(value = "/jira/issues", produces = MediaType.APPLICATION_JSON_VALUE)
     public JiraCreateIssuesResponse createJiraIssues(@Valid @RequestBody JiraCreateIssuesRequest request) {
         return integrationConnectService.createJiraIssues(request);
     }
@@ -130,6 +198,16 @@ public class IntegrationConnectController {
     @PostMapping("/jira/issues/delete")
     public BlinkJiraIssueDeleteResponse deleteJiraIssues(@Valid @RequestBody JiraDeleteIssuesRequest request) {
         return integrationConnectService.deleteJiraIssuesByKeys(request);
+    }
+
+    @PostMapping("/jira/issues/statuses")
+    public JiraIssueStatusesResponse jiraIssueStatuses(@Valid @RequestBody JiraIssueStatusesRequest request) {
+        return integrationConnectService.fetchJiraIssueStatuses(request);
+    }
+
+    @PostMapping("/jira/issues/transition")
+    public JiraIssueStatusItem transitionJiraIssue(@Valid @RequestBody JiraIssueTransitionRequest request) {
+        return integrationConnectService.transitionJiraIssue(request);
     }
 
     @PostMapping("/jira/comments")
@@ -312,6 +390,45 @@ public class IntegrationConnectController {
                 request.getHeader("X-Forwarded-Host"),
                 request.getScheme(),
                 request.getHeader("Host")
+        );
+    }
+
+    private static FigmaDesignBindingRequest withWebhookBase(FigmaDesignBindingRequest request, HttpServletRequest httpRequest) {
+        if (request == null) {
+            return null;
+        }
+        if (request.webhookPublicBase() != null && !request.webhookPublicBase().isBlank()) {
+            return request;
+        }
+        return new FigmaDesignBindingRequest(
+                request.projectId(),
+                request.fileKey(),
+                request.fileUrl(),
+                request.fileName(),
+                request.figmaProjectId(),
+                request.syncJira(),
+                request.screens(),
+                request.stories(),
+                request.jiraIssues(),
+                publicApiBase(httpRequest)
+        );
+    }
+
+    private static FigmaIngestRequest withWebhookBase(FigmaIngestRequest request, HttpServletRequest httpRequest) {
+        if (request == null) {
+            return null;
+        }
+        if (request.webhookPublicBase() != null && !request.webhookPublicBase().isBlank()) {
+            return request;
+        }
+        return new FigmaIngestRequest(
+                request.projectId(),
+                request.fileKey(),
+                request.fileUrl(),
+                request.syncJira(),
+                request.stories(),
+                request.jiraIssues(),
+                publicApiBase(httpRequest)
         );
     }
 }

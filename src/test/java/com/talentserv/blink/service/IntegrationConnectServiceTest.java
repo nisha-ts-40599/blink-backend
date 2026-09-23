@@ -79,6 +79,25 @@ class IntegrationConnectServiceTest {
     }
 
     @Test
+    void figmaRejectedTokenUsesClearMessage() {
+        responses.put("https://api.figma.com/v1/me", json(403, "{\"message\":\"Invalid token\"}"));
+        assertThatThrownBy(() -> service.connect(new IntegrationConnectRequest(
+                "figma",
+                "42",
+                null,
+                "figd_bad",
+                null,
+                null,
+                null,
+                null,
+                null,
+                null
+        )))
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("Figma rejected this token");
+    }
+
+    @Test
     void githubCreatesUserRepositories() {
         responses.put("https://api.github.com/user", json(200, "{\"login\":\"octocat\"}"));
         postResponses.put("https://api.github.com/user/repos", json(201, "{\"html_url\":\"https://github.com/octocat/customer-service\"}"));
@@ -661,6 +680,111 @@ class IntegrationConnectServiceTest {
     }
 
     @Test
+    void createJiraIssuesReusesOAuthStoredOnAnotherProject() {
+        String api = "https://api.atlassian.com/ex/jira/cloud-1";
+        responses.put(api + "/rest/api/3/issuetype", json(200, "[{\"name\":\"Epic\"},{\"name\":\"Story\"}]"));
+        responses.put(api + "/rest/api/3/field", json(200, "[]"));
+        responses.put(api + "/rest/api/3/project/FIT", json(200, "{\"key\":\"FIT\",\"simplified\":true,\"style\":\"next-gen\"}"));
+        postResponses.put(api + "/rest/api/3/issue", json(201, "{\"key\":\"FIT-9\"}"));
+
+        MemoryProjectIntegrationStore store = new MemoryProjectIntegrationStore();
+        store.upsert(new com.talentserv.blink.dto.StoredIntegration(
+                22L,
+                "jira",
+                "ada",
+                "https://talentserv.atlassian.net",
+                "ada@acme.com",
+                null,
+                null,
+                null,
+                "FIT",
+                "FIT",
+                null,
+                "cloud-1",
+                "token",
+                "oauth-access",
+                "refresh-xyz",
+                java.time.Instant.now().plusSeconds(3600)
+        ));
+        var creating = new IntegrationConnectService(serviceGateway(), new BlinkProperties(), store);
+
+        var result = creating.createJiraIssues(new com.talentserv.blink.dto.JiraCreateIssuesRequest(
+                "15",
+                null,
+                null,
+                null,
+                null,
+                null,
+                "FIT",
+                List.of(),
+                List.of(new com.talentserv.blink.dto.JiraStorySpec(
+                        "S1", null, "User login", null, "user", "to sign in", "I can access the app", List.of()
+                ))
+        ));
+
+        assertThat(result.status()).isEqualTo("ok");
+        assertThat(result.issues()).extracting(com.talentserv.blink.dto.JiraCreatedIssue::jiraKey).contains("FIT-9");
+        assertThat(store.find(15L, "jira")).isPresent();
+        assertThat(store.find(15L, "jira").orElseThrow().authType()).isEqualTo("oauth");
+        assertThat(store.find(15L, "jira").orElseThrow().cloudId()).isEqualTo("cloud-1");
+    }
+
+    @Test
+    void createJiraIssuesRefreshesExpiredOAuthBeforeCreate() {
+        String api = "https://api.atlassian.com/ex/jira/cloud-1";
+        responses.put(api + "/rest/api/3/issuetype", json(200, "[{\"name\":\"Story\"}]"));
+        responses.put(api + "/rest/api/3/field", json(200, "[]"));
+        responses.put(api + "/rest/api/3/project/FIT", json(200, "{\"key\":\"FIT\",\"simplified\":true}"));
+        postResponses.put(
+                "https://auth.atlassian.com/oauth/token",
+                json(200, "{\"access_token\":\"fresh-access\",\"expires_in\":3600}")
+        );
+        postResponses.put(api + "/rest/api/3/issue", json(201, "{\"key\":\"FIT-10\"}"));
+
+        MemoryProjectIntegrationStore store = new MemoryProjectIntegrationStore();
+        store.upsert(new com.talentserv.blink.dto.StoredIntegration(
+                22L,
+                "jira",
+                "ada",
+                "https://talentserv.atlassian.net",
+                "ada@acme.com",
+                null,
+                null,
+                null,
+                "FIT",
+                "FIT",
+                null,
+                "cloud-1",
+                "token",
+                "expired-access",
+                "refresh-xyz",
+                java.time.Instant.now().minusSeconds(120)
+        ));
+        BlinkProperties props = new BlinkProperties();
+        props.setJiraClientId("client-id");
+        props.setJiraClientSecret("client-secret");
+        var creating = new IntegrationConnectService(serviceGateway(), props, store);
+
+        var result = creating.createJiraIssues(new com.talentserv.blink.dto.JiraCreateIssuesRequest(
+                "15",
+                null,
+                null,
+                null,
+                null,
+                null,
+                "FIT",
+                List.of(),
+                List.of(new com.talentserv.blink.dto.JiraStorySpec(
+                        "S1", null, "User login", null, "user", "to sign in", "I can access the app", List.of()
+                ))
+        ));
+
+        assertThat(result.status()).isEqualTo("ok");
+        assertThat(result.issues().get(0).jiraKey()).isEqualTo("FIT-10");
+        assertThat(store.find(15L, "jira").orElseThrow().accessToken()).isEqualTo("fresh-access");
+    }
+
+    @Test
     void githubCreateUsesStoredTokenWhenRequestOmitsIt() {
         responses.put("https://api.github.com/user", json(200, "{\"login\":\"octocat\"}"));
         postResponses.put("https://api.github.com/user/repos", json(201, "{\"html_url\":\"https://github.com/octocat/customer-service\"}"));
@@ -1012,6 +1136,23 @@ class IntegrationConnectServiceTest {
                 return java.util.Optional.empty();
             }
             return java.util.Optional.ofNullable(rows.get(projectId + ":" + provider));
+        }
+
+        @Override
+        public java.util.Optional<com.talentserv.blink.dto.StoredIntegration> findLatest(String provider) {
+            if (provider == null || provider.isBlank()) {
+                return java.util.Optional.empty();
+            }
+            com.talentserv.blink.dto.StoredIntegration best = null;
+            for (com.talentserv.blink.dto.StoredIntegration row : rows.values()) {
+                if (row == null || row.provider() == null || !provider.equalsIgnoreCase(row.provider())) {
+                    continue;
+                }
+                if (best == null || (row.projectId() != null && (best.projectId() == null || row.projectId() > best.projectId()))) {
+                    best = row;
+                }
+            }
+            return java.util.Optional.ofNullable(best);
         }
     }
 }

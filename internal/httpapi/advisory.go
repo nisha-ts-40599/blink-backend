@@ -127,6 +127,45 @@ func (s *Server) classifyWork(w http.ResponseWriter, r *http.Request) {
 	s.writeAgentResult(w, r, p.ProjectName, id, raw, err)
 }
 
+func (s *Server) proposeDesigns(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	p, err := s.proj.RequireOwned(r.Context(), id, sessionEmail(r))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if !s.requireReadyWorkspace(w, r, p.ProjectName, id) {
+		return
+	}
+	var body map[string]any
+	_ = readJSON(r, &body)
+	payload := s.advisoryPayload(r, p.ProjectName, id, body)
+	raw, err := s.agent.ProposeDesigns(r.Context(), payload)
+	s.writeAgentResult(w, r, p.ProjectName, id, raw, err)
+}
+
+func (s *Server) proposeDesignsStandalone(w http.ResponseWriter, r *http.Request) {
+	var body map[string]any
+	_ = readJSON(r, &body)
+	if body == nil {
+		body = map[string]any{}
+	}
+	if _, ok := body["actor"]; !ok || strings.TrimSpace(fmt.Sprint(body["actor"])) == "" {
+		body["actor"] = sessionEmail(r)
+	}
+	raw, err := s.agent.ProposeDesigns(r.Context(), body)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(raw)
+}
+
 func (s *Server) createSpec(w http.ResponseWriter, r *http.Request) {
 	id, err := pathID(r)
 	if err != nil {

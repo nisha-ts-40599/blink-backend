@@ -132,6 +132,29 @@ public class FileProjectIntegrationStore implements ProjectIntegrationStore {
         ));
     }
 
+    @Override
+    public Optional<StoredIntegration> findLatest(String provider) {
+        if (provider == null || provider.isBlank()) {
+            return Optional.empty();
+        }
+        String want = provider.trim().toLowerCase(Locale.ROOT);
+        EncryptedRow best = null;
+        for (EncryptedRow row : rows.values()) {
+            if (row == null || row.provider == null || !want.equals(row.provider)) {
+                continue;
+            }
+            if (best == null
+                    || (row.accessTokenEnc != null && !row.accessTokenEnc.isBlank()
+                    && (best.accessTokenEnc == null || best.accessTokenEnc.isBlank() || row.projectKey != null))) {
+                best = row;
+            }
+        }
+        if (best == null || best.projectId == null) {
+            return Optional.empty();
+        }
+        return find(best.projectId, want);
+    }
+
     private void persist() {
         try {
             Snapshot snapshot = new Snapshot();
