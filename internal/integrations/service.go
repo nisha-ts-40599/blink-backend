@@ -445,11 +445,14 @@ func (s *Service) FigmaOAuthExchange(w http.ResponseWriter, r *http.Request) {
 	}
 	redirect := s.resolveRedirect("figma", req.RedirectURI, "")
 	form := url.Values{
-		"client_id": {clientID}, "client_secret": {clientSecret},
 		"redirect_uri": {redirect}, "code": {code}, "grant_type": {"authorization_code"},
 	}
 	status, body, err := s.do(r.Context(), http.MethodPost, "https://api.figma.com/v1/oauth/token",
-		map[string]string{"Content-Type": "application/x-www-form-urlencoded"}, []byte(form.Encode()))
+		map[string]string{
+			"Authorization": figmaBasicAuth(clientID, clientSecret),
+			"Content-Type":  "application/x-www-form-urlencoded",
+			"Accept":        "application/json",
+		}, []byte(form.Encode()))
 	if err != nil || status < 200 || status >= 300 {
 		writeErr(w, http.StatusUnauthorized, "Failed to exchange Figma code.")
 		return
@@ -1541,9 +1544,15 @@ func mergeStored(existing, in storedIntegration) storedIntegration {
 	out.CloudID = firstNonEmpty(in.CloudID, existing.CloudID)
 	out.AuthType = firstNonEmpty(in.AuthType, existing.AuthType)
 	out.AccessToken = firstNonEmpty(in.AccessToken, existing.AccessToken)
+	tokenReplaced := strings.TrimSpace(in.AccessToken) != "" && strings.TrimSpace(in.AccessToken) != strings.TrimSpace(existing.AccessToken)
 	out.RefreshToken = firstNonEmpty(in.RefreshToken, existing.RefreshToken)
+	if tokenReplaced && strings.TrimSpace(in.RefreshToken) == "" {
+		out.RefreshToken = ""
+	}
 	if in.ExpiresAt != nil {
 		out.ExpiresAt = in.ExpiresAt
+	} else if tokenReplaced {
+		out.ExpiresAt = nil
 	}
 	out.ProjectID = existing.ProjectID
 	if in.ProjectID > 0 {

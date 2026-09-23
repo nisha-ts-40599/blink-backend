@@ -2,6 +2,7 @@ package integrations
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -281,9 +282,16 @@ func (s *Service) FigmaWebhook(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) readFigmaFile(r *http.Request, token, fileKey string) (string, string, []figmaScreen, error) {
 	rawURL := "https://api.figma.com/v1/files/" + fileKey + "?depth=2"
-	status, body, err := s.doLarge(r, http.MethodGet, rawURL, figmaHeaders(token))
+	headers := figmaHeaders(token)
+	status, body, err := s.doLarge(r, http.MethodGet, rawURL, headers)
 	if err != nil {
 		return "", "", nil, fmt.Errorf("Could not reach Figma.")
+	}
+	if (status == http.StatusUnauthorized || status == http.StatusForbidden) && alternateFigmaHeaders(token) != nil {
+		status, body, err = s.doLarge(r, http.MethodGet, rawURL, alternateFigmaHeaders(token))
+		if err != nil {
+			return "", "", nil, fmt.Errorf("Could not reach Figma.")
+		}
 	}
 	if status == http.StatusTooManyRequests {
 		return "", "", nil, figmaRateErr{}
@@ -517,7 +525,26 @@ func screensFromRequest(v any) []figmaScreen {
 }
 
 func figmaHeaders(token string) map[string]string {
+	token = strings.TrimSpace(token)
+	if strings.HasPrefix(strings.ToLower(token), "figd_") {
+		return map[string]string{"X-Figma-Token": token, "Accept": "application/json"}
+	}
 	return map[string]string{"Authorization": "Bearer " + token, "Accept": "application/json"}
+}
+
+func alternateFigmaHeaders(token string) map[string]string {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return nil
+	}
+	if strings.HasPrefix(strings.ToLower(token), "figd_") {
+		return map[string]string{"Authorization": "Bearer " + token, "Accept": "application/json"}
+	}
+	return map[string]string{"X-Figma-Token": token, "Accept": "application/json"}
+}
+
+func figmaBasicAuth(clientID, clientSecret string) string {
+	return "Basic " + base64.StdEncoding.EncodeToString([]byte(clientID+":"+clientSecret))
 }
 
 func truthy(v any) bool {
@@ -588,28 +615,34 @@ func (s *Service) figmaAccessToken(r *http.Request, stored *storedIntegration, f
 		if token == "" {
 			return "", fmt.Errorf("Connect Figma before ingesting a design.")
 		}
-		if force && strings.TrimSpace(stored.RefreshToken) == "" {
-			return "", fmt.Errorf("Figma session expired. Reconnect Figma on Integrations, then sync again.")
-		}
 		return token, nil
 	}
 	clientID := strings.TrimSpace(s.cfg.FigmaClientID)
 	clientSecret := strings.TrimSpace(s.cfg.FigmaClientSecret)
 	if clientID == "" || clientSecret == "" {
+		if token != "" && !force {
+			return token, nil
+		}
 		return "", fmt.Errorf("Figma OAuth credentials are not configured on the server.")
 	}
-	form := url.Values{
-		"client_id": {clientID}, "client_secret": {clientSecret},
-		"refresh_token": {stored.RefreshToken},
-	}
+	form := url.Values{"refresh_token": {stored.RefreshToken}}
 	status, body, err := s.do(r.Context(), http.MethodPost, "https://api.figma.com/v1/oauth/refresh",
-		map[string]string{"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
-		[]byte(form.Encode()))
+		map[string]string{
+			"Authorization": figmaBasicAuth(clientID, clientSecret),
+			"Content-Type":  "application/x-www-form-urlencoded",
+			"Accept":        "application/json",
+		}, []byte(form.Encode()))
 	if err != nil || status < 200 || status >= 300 {
+		if token != "" && !force {
+			return token, nil
+		}
 		return "", fmt.Errorf("Figma session expired. Reconnect Figma on Integrations, then sync again.")
 	}
 	access := jsonText(body, "access_token")
 	if access == "" {
+		if token != "" && !force {
+			return token, nil
+		}
 		return "", fmt.Errorf("Figma session expired. Reconnect Figma on Integrations, then sync again.")
 	}
 	stored.AccessToken = access
