@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -167,9 +168,13 @@ func (s *Service) IngestFigmaDesign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	stored, ok := s.load(r.Context(), projectID, "figma")
-	token := strings.TrimSpace(stored.AccessToken)
-	if !ok || token == "" {
+	if !ok || strings.TrimSpace(stored.AccessToken) == "" {
 		writeErr(w, http.StatusBadRequest, "Connect Figma before ingesting a design.")
+		return
+	}
+	token, err := s.figmaAccessToken(r, &stored, false)
+	if err != nil {
+		writeErr(w, http.StatusUnauthorized, err.Error())
 		return
 	}
 	s.ingestLoaded(w, r, projectID, token, stored.Organization, req, true)
@@ -187,6 +192,17 @@ func (s *Service) ingestLoaded(w http.ResponseWriter, r *http.Request, projectID
 		return
 	}
 	name, version, screens, err := s.readFigmaFile(r, token, fileKey)
+	if auth, ok := err.(figmaAuthErr); ok {
+		stored, found := s.load(r.Context(), projectID, "figma")
+		if found {
+			if refreshed, rerr := s.figmaAccessToken(r, &stored, true); rerr == nil && refreshed != token {
+				token = refreshed
+				name, version, screens, err = s.readFigmaFile(r, token, fileKey)
+			} else if rerr != nil && auth.expired {
+				err = rerr
+			}
+		}
+	}
 	if err != nil {
 		writeErr(w, statusFromFigmaErr(err), err.Error())
 		return
@@ -254,8 +270,13 @@ func (s *Service) FigmaWebhook(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"status": "ignored", "message": "Figma is not connected."})
 		return
 	}
+	token, err := s.figmaAccessToken(r, &stored, false)
+	if err != nil || token == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ignored", "message": "Figma is not connected."})
+		return
+	}
 	req := map[string]any{"projectId": projectID, "fileKey": fileKey, "syncJira": true}
-	s.ingestLoaded(w, r, projectID, stored.AccessToken, stored.Organization, req, false)
+	s.ingestLoaded(w, r, projectID, token, stored.Organization, req, false)
 }
 
 func (s *Service) readFigmaFile(r *http.Request, token, fileKey string) (string, string, []figmaScreen, error) {
@@ -268,7 +289,7 @@ func (s *Service) readFigmaFile(r *http.Request, token, fileKey string) (string,
 		return "", "", nil, figmaRateErr{}
 	}
 	if status == http.StatusUnauthorized || status == http.StatusForbidden {
-		return "", "", nil, fmt.Errorf("Figma rejected this token. Reconnect Figma on Integrations, then sync again.")
+		return "", "", nil, figmaAuthErr{expired: figmaTokenRejected(body), detail: figmaErrText(body)}
 	}
 	if status == http.StatusNotFound {
 		return "", "", nil, fmt.Errorf("That Figma file was not found. Bind the file again.")
@@ -527,7 +548,81 @@ func statusFromFigmaErr(err error) int {
 	if _, ok := err.(figmaRateErr); ok {
 		return http.StatusTooManyRequests
 	}
+	if _, ok := err.(figmaAuthErr); ok {
+		return http.StatusUnauthorized
+	}
 	return http.StatusBadGateway
+}
+
+type figmaAuthErr struct {
+	expired bool
+	detail  string
+}
+
+func (e figmaAuthErr) Error() string {
+	if e.expired || e.detail == "" {
+		return "Figma session expired. Reconnect Figma on Integrations, then sync again."
+	}
+	return "Figma could not open this file. " + e.detail
+}
+
+func figmaErrText(body string) string {
+	return firstNonEmpty(jsonText(body, "err"), jsonText(body, "message"), jsonText(body, "error"))
+}
+
+func figmaTokenRejected(body string) bool {
+	text := strings.ToLower(figmaErrText(body))
+	if text == "" {
+		return true
+	}
+	return strings.Contains(text, "token") || strings.Contains(text, "unauthorized") || strings.Contains(text, "invalid")
+}
+
+func (s *Service) figmaAccessToken(r *http.Request, stored *storedIntegration, force bool) (string, error) {
+	if stored == nil {
+		return "", fmt.Errorf("Connect Figma before ingesting a design.")
+	}
+	token := strings.TrimSpace(stored.AccessToken)
+	needs := force || (stored.ExpiresAt != nil && time.Until(stored.ExpiresAt.UTC()) < 2*time.Minute)
+	if !needs || strings.TrimSpace(stored.RefreshToken) == "" {
+		if token == "" {
+			return "", fmt.Errorf("Connect Figma before ingesting a design.")
+		}
+		if force && strings.TrimSpace(stored.RefreshToken) == "" {
+			return "", fmt.Errorf("Figma session expired. Reconnect Figma on Integrations, then sync again.")
+		}
+		return token, nil
+	}
+	clientID := strings.TrimSpace(s.cfg.FigmaClientID)
+	clientSecret := strings.TrimSpace(s.cfg.FigmaClientSecret)
+	if clientID == "" || clientSecret == "" {
+		return "", fmt.Errorf("Figma OAuth credentials are not configured on the server.")
+	}
+	form := url.Values{
+		"client_id": {clientID}, "client_secret": {clientSecret},
+		"refresh_token": {stored.RefreshToken},
+	}
+	status, body, err := s.do(r.Context(), http.MethodPost, "https://api.figma.com/v1/oauth/refresh",
+		map[string]string{"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
+		[]byte(form.Encode()))
+	if err != nil || status < 200 || status >= 300 {
+		return "", fmt.Errorf("Figma session expired. Reconnect Figma on Integrations, then sync again.")
+	}
+	access := jsonText(body, "access_token")
+	if access == "" {
+		return "", fmt.Errorf("Figma session expired. Reconnect Figma on Integrations, then sync again.")
+	}
+	stored.AccessToken = access
+	if rt := jsonText(body, "refresh_token"); rt != "" {
+		stored.RefreshToken = rt
+	}
+	if n := jsonInt(body, "expires_in"); n > 0 {
+		t := time.Now().UTC().Add(time.Duration(n) * time.Second)
+		stored.ExpiresAt = &t
+	}
+	owner := strings.TrimSpace(r.Header.Get("X-Blink-Owner-Email"))
+	_ = s.persistOwned(r.Context(), owner, *stored)
+	return access, nil
 }
 
 type figmaChange struct {
@@ -739,6 +834,15 @@ func (s *Service) ensureFigmaWebhook(r *http.Request, token string, row *figmaDe
 	if status >= 200 && status < 300 {
 		row.WebhookID = firstNonEmpty(jsonText(body, "id"), jsonText(body, "webhook_id"))
 		row.WebhookStatus = "active"
+		return
+	}
+	detail := strings.ToLower(firstNonEmpty(jsonText(body, "err"), jsonText(body, "message"), jsonText(body, "error"), body))
+	if status == http.StatusForbidden && (strings.Contains(detail, "plan") || strings.Contains(detail, "starter") || strings.Contains(detail, "upgrade")) {
+		row.WebhookStatus = "Figma Starter cannot update tickets automatically. Put this file in a Professional team, reconnect Figma, then click Sync once."
+		return
+	}
+	if status == http.StatusForbidden && strings.Contains(detail, "scope") {
+		row.WebhookStatus = "Reconnect Figma on Integrations so Blink can turn on automatic updates."
 		return
 	}
 	row.WebhookStatus = fmt.Sprintf("pending (HTTP %d)", status)
