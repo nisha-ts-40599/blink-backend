@@ -35,7 +35,7 @@ services:
       - key: BLINK_FIGMA_CLIENT_SECRET
         sync: false
       - key: BLINK_FIGMA_SCOPES
-        value: current_user:read,file_content:read,file_metadata:read,webhooks:write
+        value: current_user:read,file_content:read,file_metadata:read
       - key: AWS_ACCESS_KEY_ID
         sync: false
       - key: AWS_SECRET_ACCESS_KEY
