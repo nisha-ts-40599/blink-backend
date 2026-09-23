@@ -934,7 +934,7 @@ public class IntegrationConnectService {
             throw new ApiException(HttpStatus.BAD_REQUEST, "Add at least one Jira issue key.");
         }
         Long projectId = requireBlinkProjectId(request.projectId());
-        StoredIntegration stored = requireStoredJira(projectId);
+        StoredIntegration stored = refreshedJira(projectId);
         String projectKey = jiraProjectKey(stored);
         JiraCallContext ctx = resolveStoredJira(stored);
         List<String> keys = sanitizeIssueKeys(request.issueKeys());
@@ -943,15 +943,23 @@ public class IntegrationConnectService {
         }
 
         Map<String, JiraIssueStatusItem> byKey = new LinkedHashMap<>();
-        for (int offset = 0; offset < keys.size(); offset += JIRA_SEARCH_PAGE) {
-            List<String> chunk = keys.subList(offset, Math.min(keys.size(), offset + JIRA_SEARCH_PAGE));
-            String jql = "project = " + projectKey + " AND key in (" + String.join(", ", chunk) + ")";
-            for (JsonNode issue : searchJiraIssues(ctx, jql, List.of("status"))) {
-                JiraIssueStatusItem item = toStatusItem(issue);
-                if (item != null) {
-                    byKey.put(item.key().toUpperCase(Locale.ROOT), item);
+        try {
+            for (int offset = 0; offset < keys.size(); offset += JIRA_SEARCH_PAGE) {
+                List<String> chunk = keys.subList(offset, Math.min(keys.size(), offset + JIRA_SEARCH_PAGE));
+                String jql = "project = " + projectKey + " AND key in (" + String.join(", ", chunk) + ")";
+                for (JsonNode issue : searchJiraIssues(ctx, jql, List.of("status"))) {
+                    JiraIssueStatusItem item = toStatusItem(issue);
+                    if (item != null) {
+                        byKey.put(item.key().toUpperCase(Locale.ROOT), item);
+                    }
                 }
             }
+        } catch (ApiException ex) {
+            if (!jiraSearchUnavailable(ex)) {
+                throw ex;
+            }
+            log.warn("Jira search could not load statuses ({}). Reading each issue instead.", ex.getMessage());
+            return statusesByIssue(ctx, projectKey, keys);
         }
 
         List<JiraIssueStatusItem> ordered = new ArrayList<>();
@@ -975,7 +983,7 @@ public class IntegrationConnectService {
             throw new ApiException(HttpStatus.BAD_REQUEST, "Jira issue key is not valid.");
         }
         Long projectId = requireBlinkProjectId(request.projectId());
-        StoredIntegration stored = requireStoredJira(projectId);
+        StoredIntegration stored = refreshedJira(projectId);
         String projectKey = jiraProjectKey(stored);
         JiraCallContext ctx = resolveStoredJira(stored);
 
@@ -1094,6 +1102,9 @@ public class IntegrationConnectService {
         String url = ctx.apiBase() + "/rest/api/3/issue/" + encode(issueKey) + "?fields=status,project";
         IntegrationHttpGateway.IntegrationHttpResponse res = http.get(url, ctx.headers());
         if (res.status() == 404) {
+            if (jiraGatewayNotFound(res.body())) {
+                throw new ApiException(HttpStatus.BAD_GATEWAY, jiraErrorMessage(res.body(), res.status()));
+            }
             throw new ApiException(HttpStatus.NOT_FOUND, issueKey + " was not found in Jira.");
         }
         if (res.status() >= 400) {
@@ -1135,6 +1146,95 @@ public class IntegrationConnectService {
             default -> name == null ? "missing" : "unknown";
         };
         return new JiraIssueStatusItem(key, name, category);
+    }
+
+    /**
+     * Search is the fast path. Jira's OAuth gateway sometimes answers
+     * {@code POST /rest/api/3/search/jql} with "404 page not found" while
+     * {@code GET /rest/api/3/issue/{key}} still works, which is how tickets are created.
+     */
+    private JiraIssueStatusesResponse statusesByIssue(JiraCallContext ctx, String projectKey, List<String> keys) {
+        try {
+            return statusesByIssueOn(ctx, projectKey, keys);
+        } catch (ApiException ex) {
+            JiraCallContext site = siteJiraContext(ctx);
+            if (site == null || !jiraSearchUnavailable(ex)) {
+                throw ex;
+            }
+            log.warn("Jira issue read failed on {}. Retrying {}.", ctx.apiBase(), site.apiBase());
+            return statusesByIssueOn(site, projectKey, keys);
+        }
+    }
+
+    private JiraIssueStatusesResponse statusesByIssueOn(JiraCallContext ctx, String projectKey, List<String> keys) {
+        List<JiraIssueStatusItem> ordered = new ArrayList<>();
+        ApiException firstFailure = null;
+        int loaded = 0;
+        for (String key : keys) {
+            try {
+                ordered.add(fetchIssueStatus(ctx, projectKey, key));
+                loaded++;
+            } catch (ApiException ex) {
+                if (ex.getStatus() == HttpStatus.NOT_FOUND) {
+                    ordered.add(new JiraIssueStatusItem(key, null, "missing"));
+                    continue;
+                }
+                if (firstFailure == null) {
+                    firstFailure = ex;
+                }
+                ordered.add(new JiraIssueStatusItem(key, null, "missing"));
+            }
+        }
+        if (loaded == 0 && firstFailure != null) {
+            throw firstFailure;
+        }
+        return new JiraIssueStatusesResponse(List.copyOf(ordered));
+    }
+
+    private StoredIntegration refreshedJira(Long projectId) {
+        StoredIntegration stored = resolveStoredJira(projectId);
+        if (stored == null || trimToNull(stored.projectKey()) == null) {
+            throw new ApiException(HttpStatus.BAD_REQUEST,
+                    "Connect Jira and select a project for this Blink project first.");
+        }
+        return stored;
+    }
+
+    private static boolean jiraSearchUnavailable(ApiException ex) {
+        if (ex == null || ex.getStatus() != HttpStatus.BAD_GATEWAY) {
+            return false;
+        }
+        String message = ex.getMessage() == null ? "" : ex.getMessage().toLowerCase(Locale.ROOT);
+        return message.contains("404") || message.contains("page not found");
+    }
+
+    private static boolean jiraGatewayNotFound(String body) {
+        if (body == null || body.isBlank()) {
+            return false;
+        }
+        String text = body.toLowerCase(Locale.ROOT);
+        return text.contains("page not found");
+    }
+
+    /** Site URL for a bearer token when {@code api.atlassian.com} cannot route the call. */
+    private JiraCallContext siteJiraContext(JiraCallContext ctx) {
+        if (ctx == null || ctx.browseBase() == null) {
+            return null;
+        }
+        String site = ctx.browseBase().replaceAll("/+$", "");
+        String api = ctx.apiBase() == null ? "" : ctx.apiBase().replaceAll("/+$", "");
+        if (site.isBlank() || site.equalsIgnoreCase(api)) {
+            return null;
+        }
+        String host = site.replaceFirst("^https?://", "").toLowerCase(Locale.ROOT);
+        int slash = host.indexOf('/');
+        if (slash >= 0) {
+            host = host.substring(0, slash);
+        }
+        if (!host.endsWith(".atlassian.net") || "jira.atlassian.net".equals(host)) {
+            return null;
+        }
+        return new JiraCallContext(site, ctx.headers(), site);
     }
 
     private String jiraProjectKey(StoredIntegration stored) {
@@ -1340,6 +1440,10 @@ public class IntegrationConnectService {
             String url = ctx.apiBase() + "/rest/api/3/search/jql";
             IntegrationHttpGateway.IntegrationHttpResponse res = http.post(url, ctx.headers(), body.toString());
             if (res.status() >= 400) {
+                log.warn(
+                        "Jira search failed status={} url={} body={}",
+                        res.status(), url, abbreviate(res.body(), 180)
+                );
                 throw new ApiException(HttpStatus.BAD_GATEWAY, jiraErrorMessage(res.body(), res.status()));
             }
             try {
@@ -2177,7 +2281,14 @@ public class IntegrationConnectService {
         } catch (Exception ignored) {
             fromArray = firstText(body, "error", "message");
         }
-        return fromArray.isBlank() ? "Jira returned HTTP " + status + "." : fromArray;
+        if (!fromArray.isBlank()) {
+            return fromArray;
+        }
+        String plain = body == null ? "" : body.replaceAll("<[^>]+>", " ").replaceAll("\\s+", " ").trim();
+        if (!plain.isBlank() && plain.length() <= 180 && !plain.startsWith("{") && !plain.startsWith("[")) {
+            return plain;
+        }
+        return "Jira returned HTTP " + status + ".";
     }
 
     private record JiraCallContext(String apiBase, Map<String, String> headers, String browseBase) {}

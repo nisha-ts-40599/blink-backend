@@ -15,6 +15,7 @@ import com.talentserv.blink.dto.CreateRepositoriesRequest;
 import com.talentserv.blink.dto.CreateRepositoriesResponse;
 import com.talentserv.blink.dto.IntegrationConnectRequest;
 import com.talentserv.blink.dto.IntegrationConnectResponse;
+import com.talentserv.blink.dto.JiraIssueStatusesRequest;
 import com.talentserv.blink.error.ApiException;
 
 class IntegrationConnectServiceTest {
@@ -1081,6 +1082,45 @@ class IntegrationConnectServiceTest {
         assertThat(deleted).anyMatch(url -> url.endsWith("/issue/FIT-1"));
         assertThat(deleted).noneMatch(url -> url.endsWith("/issue/FIT-3"));
         assertThat(deleted).noneMatch(url -> url.endsWith("/issue/FIT-99"));
+    }
+
+    @Test
+    void issueStatusesFallBackToIssueGetWhenSearchReturns404() {
+        var store = new MemoryProjectIntegrationStore();
+        store.upsert(new com.talentserv.blink.dto.StoredIntegration(
+                42L, "jira", "Ada", "https://acme.atlassian.net", null,
+                null, null, null, "AW", "Awareness", null,
+                "cloud-1", "oauth", "access-token", null, null
+        ));
+        java.util.List<String> gets = new java.util.ArrayList<>();
+        var service = new IntegrationConnectService(new IntegrationHttpGateway() {
+            @Override
+            public IntegrationHttpResponse get(String url, Map<String, String> headers) {
+                gets.add(url);
+                if (url.endsWith("/rest/api/3/issue/AW-5350?fields=status,project")) {
+                    return json(200, """
+                            {"key":"AW-5350","fields":{"project":{"key":"AW"},
+                              "status":{"name":"To Do","statusCategory":{"key":"new"}}}}
+                            """);
+                }
+                return new IntegrationHttpResponse(404, "404 page not found");
+            }
+
+            @Override
+            public IntegrationHttpResponse post(String url, Map<String, String> headers, String jsonBody) {
+                if (url.endsWith("/rest/api/3/search/jql")) {
+                    return new IntegrationHttpResponse(404, "404 page not found");
+                }
+                return new IntegrationHttpResponse(404, "");
+            }
+        }, new BlinkProperties(), store);
+
+        var statuses = service.fetchJiraIssueStatuses(new JiraIssueStatusesRequest("42", java.util.List.of("AW-5350")));
+        assertThat(statuses.issues()).extracting(com.talentserv.blink.dto.JiraIssueStatusItem::name)
+                .containsExactly("To Do");
+        assertThat(statuses.issues()).extracting(com.talentserv.blink.dto.JiraIssueStatusItem::category)
+                .containsExactly("todo");
+        assertThat(gets).anyMatch(url -> url.contains("/ex/jira/cloud-1/rest/api/3/issue/AW-5350"));
     }
 
     private IntegrationHttpGateway serviceGateway() {
