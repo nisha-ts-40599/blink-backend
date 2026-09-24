@@ -121,6 +121,8 @@ func New(cfg config.Config, authSvc *auth.Service, proj *project.Service, agentC
 				prr.Post("/{id}/confirm-stakeholders", s.confirmStakeholders)
 				prr.Post("/{id}/plan-product-scope", s.planProductScopeID)
 				prr.Post("/plan-product-scope", s.planProductScope)
+				prr.Post("/{id}/clarify-product-scope", s.clarifyProductScopeID)
+				prr.Post("/clarify-product-scope", s.clarifyProductScope)
 				prr.Post("/{id}/confirm-product-scope", s.confirmProductScope)
 				prr.Post("/{id}/classify-work", s.classifyWork)
 				prr.Post("/{id}/propose-designs", s.proposeDesigns)
@@ -488,14 +490,14 @@ func (s *Server) planProductScopeID(w http.ResponseWriter, r *http.Request) {
 	}
 	var body map[string]any
 	_ = readJSON(r, &body)
-	reqText, _ := body["requirementText"].(string)
+	payload := s.advisoryPayload(r, p.ProjectName, id, body)
 	if wantsSSE(r) {
 		_, writeSSE, ok := startSSE(w)
 		if !ok {
 			writeErr(w, fmt.Errorf("streaming is not supported on this connection"))
 			return
 		}
-		raw, err := s.agent.PlanProductScopeStream(r.Context(), p.ProjectName, strconv.FormatInt(id, 10), reqText, sessionEmail(r), func(delta string) error {
+		raw, err := s.agent.PlanProductScopeStreamWithPayload(r.Context(), payload, func(delta string) error {
 			if !writeSSE("thinking", map[string]any{"text": delta}) {
 				return fmt.Errorf("client disconnected")
 			}
@@ -509,7 +511,7 @@ func (s *Server) planProductScopeID(w http.ResponseWriter, r *http.Request) {
 		_ = writeSSE("done", json.RawMessage(raw))
 		return
 	}
-	raw, err := s.agent.PlanProductScope(r.Context(), p.ProjectName, strconv.FormatInt(id, 10), reqText, sessionEmail(r))
+	raw, err := s.agent.PlanProductScopeWithPayload(r.Context(), payload)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -525,15 +527,20 @@ func (s *Server) planProductScope(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	if _, ok := body["actor"]; !ok || strings.TrimSpace(fmt.Sprint(body["actor"])) == "" {
+		body["actor"] = sessionEmail(r)
+	}
 	name, _ := body["projectName"].(string)
-	reqText, _ := body["requirementText"].(string)
+	if name != "" {
+		body["projectName"] = name
+	}
 	if wantsSSE(r) {
 		_, writeSSE, ok := startSSE(w)
 		if !ok {
 			writeErr(w, fmt.Errorf("streaming is not supported on this connection"))
 			return
 		}
-		raw, err := s.agent.PlanProductScopeStream(r.Context(), name, "", reqText, sessionEmail(r), func(delta string) error {
+		raw, err := s.agent.PlanProductScopeStreamWithPayload(r.Context(), body, func(delta string) error {
 			if !writeSSE("thinking", map[string]any{"text": delta}) {
 				return fmt.Errorf("client disconnected")
 			}
@@ -546,7 +553,43 @@ func (s *Server) planProductScope(w http.ResponseWriter, r *http.Request) {
 		_ = writeSSE("done", json.RawMessage(raw))
 		return
 	}
-	raw, err := s.agent.PlanProductScope(r.Context(), name, "", reqText, sessionEmail(r))
+	raw, err := s.agent.PlanProductScopeWithPayload(r.Context(), body)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(raw)
+}
+
+func (s *Server) clarifyProductScopeID(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	p, err := s.proj.RequireOwned(r.Context(), id, sessionEmail(r))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	var body map[string]any
+	_ = readJSON(r, &body)
+	payload := s.advisoryPayload(r, p.ProjectName, id, body)
+	raw, err := s.agent.ClarifyProductScope(r.Context(), payload)
+	s.writeAgentResult(w, r, p.ProjectName, id, raw, err)
+}
+
+func (s *Server) clarifyProductScope(w http.ResponseWriter, r *http.Request) {
+	var body map[string]any
+	if err := readJSON(r, &body); err != nil {
+		writeErr(w, err)
+		return
+	}
+	if _, ok := body["actor"]; !ok || strings.TrimSpace(fmt.Sprint(body["actor"])) == "" {
+		body["actor"] = sessionEmail(r)
+	}
+	raw, err := s.agent.ClarifyProductScope(r.Context(), body)
 	if err != nil {
 		writeErr(w, err)
 		return
