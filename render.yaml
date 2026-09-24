@@ -36,6 +36,8 @@ services:
         sync: false
       - key: BLINK_FIGMA_SCOPES
         value: current_user:read,file_content:read,file_metadata:read
+      - key: STITCH_API_KEY
+        sync: false
       - key: AWS_ACCESS_KEY_ID
         sync: false
       - key: AWS_SECRET_ACCESS_KEY

@@ -165,6 +165,7 @@ func New(cfg config.Config, authSvc *auth.Service, proj *project.Service, agentC
 				ir.Delete("/figma/design", s.integ.ClearFigmaDesign)
 				ir.Post("/figma/ingest", s.integ.IngestFigmaDesign)
 				ir.Post("/figma/sync", s.integ.IngestFigmaDesign)
+				ir.Post("/stitch/designs", s.integ.ProposeStitchDesigns)
 				ir.Post("/jira/issues", s.integ.CreateJiraIssues)
 				ir.Post("/jira/issues/delete", s.integ.DeleteJiraIssues)
 				ir.Post("/jira/issues/statuses", s.integ.JiraIssueStatuses)
