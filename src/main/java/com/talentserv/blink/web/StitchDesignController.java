@@ -4,14 +4,21 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -38,10 +45,26 @@ public class StitchDesignController {
     };
 
     private final BlinkProperties properties;
-    private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(20)).build();
+    private final HttpClient http = HttpClient.newBuilder()
+            .followRedirects(HttpClient.Redirect.NORMAL)
+            .connectTimeout(Duration.ofSeconds(20))
+            .build();
 
     public StitchDesignController(BlinkProperties properties) {
         this.properties = properties;
+    }
+
+    @GetMapping("/media/{id}")
+    public ResponseEntity<byte[]> media(@PathVariable String id) throws Exception {
+        if (id == null || !id.matches("[a-f0-9\\-]{36}")) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "Design image not found.");
+        }
+        Path file = mediaDir().resolve(id);
+        if (!Files.isRegularFile(file)) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "Design image not found.");
+        }
+        byte[] bytes = Files.readAllBytes(file);
+        return ResponseEntity.ok().contentType(imageType(bytes)).body(bytes);
     }
 
     @PostMapping("/designs")
@@ -100,7 +123,7 @@ public class StitchDesignController {
                     "prompt", prompt,
                     "deviceType", "DESKTOP"
             ));
-            String image = imageUrl(raw);
+            String image = storeImage(imageUrl(raw));
             if (image.isBlank()) {
                 return null;
             }
@@ -260,6 +283,44 @@ public class StitchDesignController {
             trimmed = trimmed.substring(slash + 1);
         }
         return trimmed.matches("\\d+") ? trimmed : "";
+    }
+
+    private String storeImage(String source) {
+        if (source == null || !source.startsWith("http")) {
+            return "";
+        }
+        try {
+            HttpRequest request = HttpRequest.newBuilder(URI.create(source))
+                    .timeout(Duration.ofSeconds(40))
+                    .header("Accept", "image/png,image/jpeg,image/webp,image/*")
+                    .GET()
+                    .build();
+            HttpResponse<byte[]> response = http.send(request, HttpResponse.BodyHandlers.ofByteArray());
+            byte[] bytes = response.body();
+            if (response.statusCode() < 200 || response.statusCode() >= 300 || bytes == null || bytes.length < 32) {
+                return "";
+            }
+            String id = UUID.randomUUID().toString();
+            Files.createDirectories(mediaDir());
+            Files.write(mediaDir().resolve(id), bytes);
+            return "/api/integrations/stitch/media/" + id;
+        } catch (Exception ex) {
+            return "";
+        }
+    }
+
+    private static Path mediaDir() {
+        return Path.of(System.getProperty("user.dir", ".")).resolve(".blink-stitch-media");
+    }
+
+    private static MediaType imageType(byte[] bytes) {
+        if (bytes.length > 2 && (bytes[0] & 0xFF) == 0xFF && (bytes[1] & 0xFF) == 0xD8) {
+            return MediaType.IMAGE_JPEG;
+        }
+        if (bytes.length > 12 && bytes[0] == 'R' && bytes[1] == 'I' && bytes[2] == 'F' && bytes[3] == 'F') {
+            return MediaType.parseMediaType("image/webp");
+        }
+        return MediaType.IMAGE_PNG;
     }
 
     private static String imageUrl(JsonNode node) {

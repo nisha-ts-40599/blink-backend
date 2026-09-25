@@ -9,6 +9,7 @@ bin/
 *.log
 .env
 .blink-nodb.json
+.blink-stitch-media/
 .blink-integrations.json
 .blink-outbox/
 .DS_Store
