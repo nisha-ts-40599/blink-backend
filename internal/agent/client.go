@@ -122,11 +122,16 @@ func (c *Client) Clarify(ctx context.Context, body map[string]any) (json.RawMess
 	return c.Invoke(ctx, body)
 }
 
-func (c *Client) PlanProductScope(ctx context.Context, projectName, projectID, requirementText, actor string) (json.RawMessage, error) {
-	payload := map[string]any{
-		"command":     "plan-product-scope",
-		"projectName": projectName,
+func (c *Client) PlanProductScopeWithPayload(ctx context.Context, payload map[string]any) (json.RawMessage, error) {
+	if payload == nil {
+		payload = map[string]any{}
 	}
+	payload["command"] = "plan-product-scope"
+	return c.Invoke(ctx, payload)
+}
+
+func (c *Client) PlanProductScope(ctx context.Context, projectName, projectID, requirementText, actor string) (json.RawMessage, error) {
+	payload := map[string]any{"projectName": projectName}
 	if projectID != "" {
 		payload["projectId"] = projectID
 	}
@@ -136,6 +141,14 @@ func (c *Client) PlanProductScope(ctx context.Context, projectName, projectID, r
 	if actor != "" {
 		payload["actor"] = actor
 	}
+	return c.PlanProductScopeWithPayload(ctx, payload)
+}
+
+func (c *Client) ClarifyProductScope(ctx context.Context, payload map[string]any) (json.RawMessage, error) {
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	payload["command"] = "clarify-product-scope"
 	return c.Invoke(ctx, payload)
 }
 
@@ -474,11 +487,20 @@ func (c *Client) ClarifyStream(ctx context.Context, body map[string]any, onThink
 	return c.Clarify(ctx, body)
 }
 
-func (c *Client) PlanProductScopeStream(ctx context.Context, projectName, projectID, requirementText, actor string, onThinking func(string) error) (json.RawMessage, error) {
-	payload := map[string]any{
-		"command":     "plan-product-scope",
-		"projectName": projectName,
+func (c *Client) PlanProductScopeStreamWithPayload(ctx context.Context, payload map[string]any, onThinking func(string) error) (json.RawMessage, error) {
+	if payload == nil {
+		payload = map[string]any{}
 	}
+	payload["command"] = "plan-product-scope"
+	raw, err := c.CommandStream(ctx, payload, onThinking)
+	if err == nil {
+		return raw, nil
+	}
+	return c.PlanProductScopeWithPayload(ctx, payload)
+}
+
+func (c *Client) PlanProductScopeStream(ctx context.Context, projectName, projectID, requirementText, actor string, onThinking func(string) error) (json.RawMessage, error) {
+	payload := map[string]any{"projectName": projectName}
 	if projectID != "" {
 		payload["projectId"] = projectID
 	}
@@ -488,11 +510,7 @@ func (c *Client) PlanProductScopeStream(ctx context.Context, projectName, projec
 	if actor != "" {
 		payload["actor"] = actor
 	}
-	raw, err := c.CommandStream(ctx, payload, onThinking)
-	if err == nil {
-		return raw, nil
-	}
-	return c.PlanProductScope(ctx, projectName, projectID, requirementText, actor)
+	return c.PlanProductScopeStreamWithPayload(ctx, payload, onThinking)
 }
 
 func readSSE(r io.Reader, handle func(event string, data []byte) error) error {
